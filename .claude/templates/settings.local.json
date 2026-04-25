@@ -1,0 +1,221 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Bash",
+      "Task",
+      "TaskOutput",
+      "TaskCreate",
+      "TaskUpdate",
+      "TaskList",
+      "TaskGet",
+      "TaskStop",
+      "WebFetch",
+      "WebSearch",
+      "TodoWrite",
+      "NotebookEdit",
+      "Agent",
+      "AgentOutputTool",
+      "AskUserQuestion",
+      "EnterPlanMode",
+      "ExitPlanMode",
+      "EnterWorktree",
+      "ToolSearch",
+      "Skill",
+      "SlashCommand",
+      "BashOutput",
+      "KillShell",
+      "LSP",
+      "mcp__*"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.config/gh/**)",
+      "Write(/etc/**)",
+      "Write(/System/**)",
+      "Write(/usr/**)",
+      "Write(~/.ssh/**)",
+      "Bash(rm -rf /)",
+      "Bash(rm -rf /*)",
+      "Bash(sudo:*)",
+      "Bash(chmod 777:*)",
+      "Bash(curl*|*bash)",
+      "Bash(wget*|*bash)"
+    ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/unified_prompt_validator.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "SANDBOX_ENABLED=false MCP_AUTO_APPROVE=true python3 ~/.claude/hooks/unified_pre_tool.py",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/plan_gate.py",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(dirname \"$(git rev-parse --path-format=absolute --git-common-dir)\")/.claude/hooks/session_activity_logger.py\"",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CONVERSATION_ARCHIVE=true python3 \"$(dirname \"$(git rev-parse --path-format=absolute --git-common-dir)\")/.claude/hooks/conversation_archiver.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/plan_mode_exit_detector.py",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": {
+          "tools": [
+            "Write",
+            "Edit"
+          ]
+        },
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$(dirname \"$(git rev-parse --path-format=absolute --git-common-dir)\")/.claude/hooks/auto_format.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(dirname \"$(git rev-parse --path-format=absolute --git-common-dir)\")/plugins/autonomous-dev/hooks/session_activity_logger.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCommit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$(dirname \"$(git rev-parse --path-format=absolute --git-common-dir)\")/.claude/hooks/auto_test.py\""
+          },
+          {
+            "type": "command",
+            "command": "python \"$(dirname \"$(git rev-parse --path-format=absolute --git-common-dir)\")/.claude/hooks/security_scan.py\""
+          },
+          {
+            "type": "command",
+            "command": "python \"$(dirname \"$(git rev-parse --path-format=absolute --git-common-dir)\")/.claude/hooks/validate_command_file_ops.py\""
+          },
+          {
+            "type": "command",
+            "command": "python \"$(dirname \"$(git rev-parse --path-format=absolute --git-common-dir)\")/.claude/hooks/validate_claude_md_size.py\""
+          },
+          {
+            "type": "command",
+            "command": "python \"$(dirname \"$(git rev-parse --path-format=absolute --git-common-dir)\")/.claude/hooks/enforce_regression_test.py\""
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/unified_session_tracker.py"
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/task_completed_handler.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$(dirname \"$(git rev-parse --path-format=absolute --git-common-dir)\")/plugins/autonomous-dev/hooks/pre_compact_batch_saver.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$(dirname \"$(git rev-parse --path-format=absolute --git-common-dir)\")/plugins/autonomous-dev/hooks/post_compact_enricher.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

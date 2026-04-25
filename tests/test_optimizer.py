@@ -342,30 +342,24 @@ class TestStubsTableRegression:
     """Pin the STUBS keyset so renames break CI rather than silently rotting."""
 
     EXPECTED_STUBS_KEYS = frozenset({
-        "Bash",
-        "Read",
-        "Write",
-        "Edit",
-        "Glob",
-        "Grep",
-        "Task",
-        "TodoWrite",
-        "ExitPlanMode",
-        "NotebookEdit",
-        "WebFetch",
-        "WebSearch",
-        "BashOutput",
-        "KillShell",
-        "Skill",
-        "SlashCommand",
-        "TaskCreate",
-        "TaskUpdate",
-        "TaskGet",
-        "TaskList",
-        "TaskOutput",
-        "TaskStop",
-        "AskUserQuestion",
-        "EnterPlanMode",
+        # Core file + shell
+        "Bash", "Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit",
+        # Background processes + monitoring
+        "BashOutput", "KillShell", "Monitor", "PushNotification",
+        # Web
+        "WebFetch", "WebSearch",
+        # Subagents + tasks
+        "Task", "TodoWrite",
+        "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskOutput", "TaskStop",
+        # Plan mode + user prompts
+        "ExitPlanMode", "EnterPlanMode", "AskUserQuestion",
+        # Skills + slash commands
+        "Skill", "SlashCommand", "ToolSearch",
+        # Worktrees + scheduling + remote
+        "EnterWorktree", "ExitWorktree",
+        "CronCreate", "CronDelete", "CronList", "RemoteTrigger",
+        # MCP introspection
+        "ListMcpResourcesTool", "ReadMcpResourceTool",
     })
 
     def test_keyset_matches_pinned(self):

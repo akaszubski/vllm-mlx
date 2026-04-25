@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/akaszubski/autonomous-dev/blob/master/plugins/autonomous-dev/config/hook-metadata.schema.json",
+  "title": "Hook Sidecar Metadata",
+  "description": "Schema for .hook.json sidecar files that declaratively describe hook registration metadata",
+  "type": "object",
+  "required": ["name", "type", "interpreter"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Hook identifier matching the filename (without extension)"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["lifecycle", "utility"],
+      "description": "lifecycle = registered with Claude Code events; utility = imported by other hooks, not registered directly"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of what this hook does"
+    },
+    "interpreter": {
+      "type": "string",
+      "enum": ["python3", "bash"],
+      "description": "Runtime interpreter for the hook script"
+    },
+    "active": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether this hook is currently active"
+    },
+    "version": {
+      "type": "string",
+      "description": "Semantic version of this hook"
+    },
+    "registrations": {
+      "type": "array",
+      "description": "Claude Code lifecycle events this hook registers for",
+      "items": {
+        "type": "object",
+        "required": ["event"],
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "type": "string",
+            "enum": [
+              "UserPromptSubmit",
+              "PreToolUse",
+              "PostToolUse",
+              "Stop",
+              "SubagentStop",
+              "TaskCompleted",
+              "PreCompact",
+              "PostCompact",
+              "SessionStart"
+            ],
+            "description": "Claude Code lifecycle event name"
+          },
+          "matcher": {
+            "type": "string",
+            "default": "*",
+            "description": "Tool name matcher pattern (e.g. '*', 'Write|Edit|MultiEdit')"
+          },
+          "timeout": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60,
+            "description": "Maximum execution time in seconds (1-60)"
+          }
+        }
+      }
+    },
+    "env": {
+      "type": "object",
+      "description": "Environment variable defaults (name -> default value)",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  },
+  "if": {
+    "properties": {
+      "type": { "const": "lifecycle" }
+    },
+    "required": ["type"]
+  },
+  "then": {
+    "required": ["registrations"],
+    "properties": {
+      "registrations": {
+        "minItems": 1
+      }
+    }
+  },
+  "else": {
+    "not": {
+      "required": ["registrations"]
+    }
+  }
+}

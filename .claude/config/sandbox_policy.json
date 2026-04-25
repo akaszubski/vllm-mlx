@@ -1,0 +1,218 @@
+{
+  "version": "1.0.0",
+  "description": "Sandbox security policy for command classification and permission reduction (Issue #171)",
+  "profiles": {
+    "development": {
+      "description": "Permissive profile for development - auto-approves read-only and informational commands",
+      "safe_commands": [
+        "basename",
+        "bat",
+        "cat",
+        "comm",
+        "cut",
+        "date",
+        "df",
+        "diff",
+        "dirname",
+        "du",
+        "echo",
+        "eza",
+        "exa",
+        "fd",
+        "file",
+        "find",
+        "grep",
+        "head",
+        "hostname",
+        "id",
+        "jq",
+        "less",
+        "ls",
+        "mkdir",
+        "more",
+        "pwd",
+        "readlink",
+        "realpath",
+        "rg",
+        "sort",
+        "stat",
+        "tail",
+        "touch",
+        "tree",
+        "uname",
+        "uniq",
+        "wc",
+        "which",
+        "whoami",
+        "xargs",
+        "docker images",
+        "docker ps",
+        "gh",
+        "git branch",
+        "git config --get",
+        "git describe",
+        "git diff",
+        "git log",
+        "git ls-files",
+        "git remote",
+        "git rev-parse",
+        "git show",
+        "git status",
+        "kubectl get",
+        "cargo --version",
+        "go version",
+        "node --version",
+        "npm --version",
+        "npm list",
+        "npm ls",
+        "pip freeze",
+        "pip list",
+        "pip show",
+        "pnpm list",
+        "python --version",
+        "python -m pytest",
+        "pytest",
+        "rustc --version",
+        "yarn list"
+      ],
+      "blocked_patterns": [
+        "rm -rf",
+        "sudo",
+        "git push --force",
+        "eval",
+        "wget.*\\|.*sh",
+        "curl.*\\|.*sh",
+        "chmod 777",
+        "dd if=",
+        ">\\s*/dev/sd",
+        "mkfs\\.",
+        ":\\(\\)\\{.*\\};"
+      ],
+      "shell_injection_patterns": [
+        "\u0000",
+        "\r"
+      ],
+      "_shell_injection_note": "Minimal patterns - only block null bytes and carriage returns. Legitimate shell operators (;, &&, ||, |, $(), etc.) are allowed for normal development workflows like git commits with HEREDOC.",
+      "blocked_paths": [
+        ".env",
+        ".ssh/",
+        "credentials.json",
+        "*.pem",
+        "*.key",
+        "/etc/shadow",
+        "/root/",
+        "~/.ssh/"
+      ],
+      "path_traversal_patterns": [
+        ".."
+      ],
+      "sandbox_enabled": true,
+      "circuit_breaker": {
+        "enabled": true,
+        "threshold": 10
+      }
+    },
+    "testing": {
+      "description": "Moderate profile for testing - stricter than development",
+      "safe_commands": [
+        "basename",
+        "cat",
+        "cut",
+        "date",
+        "diff",
+        "dirname",
+        "du",
+        "echo",
+        "file",
+        "find",
+        "grep",
+        "head",
+        "ls",
+        "pwd",
+        "readlink",
+        "realpath",
+        "sort",
+        "stat",
+        "tail",
+        "tree",
+        "uniq",
+        "wc",
+        "which",
+        "git diff",
+        "git log",
+        "git status",
+        "pip list",
+        "python --version",
+        "python -m pytest",
+        "pytest"
+      ],
+      "blocked_patterns": [
+        "rm -rf",
+        "sudo",
+        "git push --force"
+      ],
+      "shell_injection_patterns": [
+        "\u0000",
+        "\r"
+      ],
+      "_shell_injection_note": "Minimal patterns - only block null bytes and carriage returns.",
+      "blocked_paths": [
+        ".env",
+        ".ssh/",
+        "credentials.json"
+      ],
+      "path_traversal_patterns": [
+        ".."
+      ],
+      "sandbox_enabled": true,
+      "circuit_breaker": {
+        "enabled": true,
+        "threshold": 5
+      }
+    },
+    "production": {
+      "description": "Strict profile for production - minimal auto-approvals",
+      "safe_commands": [
+        "cat",
+        "date",
+        "file",
+        "find",
+        "head",
+        "ls",
+        "pwd",
+        "tail",
+        "wc",
+        "git status"
+      ],
+      "blocked_patterns": [
+        "rm",
+        "sudo",
+        "git push",
+        "eval",
+        "wget",
+        "curl"
+      ],
+      "shell_injection_patterns": [
+        "\u0000",
+        "\r"
+      ],
+      "_shell_injection_note": "Minimal patterns - only block null bytes and carriage returns.",
+      "blocked_paths": [
+        ".env",
+        ".ssh/",
+        "credentials.json",
+        "*.pem",
+        "*.key"
+      ],
+      "path_traversal_patterns": [
+        ".."
+      ],
+      "sandbox_enabled": true,
+      "circuit_breaker": {
+        "enabled": true,
+        "threshold": 3
+      }
+    }
+  },
+  "default_profile": "development"
+}

@@ -1,0 +1,388 @@
+{
+  "version": "1.0.0",
+  "last_reviewed": "2026-03-28",
+  "classifications": {
+    "hooks": {
+      "enforce_prunable_threshold": {
+        "classification": "process-requirement",
+        "rationale": "Prevents prunable test count from rebounding after cleanup -- enforces continuous maintenance",
+        "removal_criteria": "Prunable count stays below threshold for 20+ consecutive sessions without enforcement",
+        "review_status": "initial",
+        "added_issue": "#863",
+        "location": "plugins/autonomous-dev/hooks/enforce_prunable_threshold.py"
+      },
+      "enforce_tdd": {
+        "classification": "model-limitation",
+        "rationale": "Model writes code before tests under time/context pressure, bypassing TDD discipline",
+        "removal_criteria": "Model consistently writes tests first across 50+ sessions without enforcement",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/enforce_tdd.py"
+      },
+      "enforce_orchestrator": {
+        "classification": "model-limitation",
+        "rationale": "Model bypasses pipeline steps when context is large or task seems simple",
+        "removal_criteria": "Model follows full pipeline sequence without enforcement across 50+ sessions",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/enforce_orchestrator.py"
+      },
+      "unified_prompt_validator": {
+        "classification": "model-limitation",
+        "rationale": "Model misinterprets or produces invalid prompt format without validation",
+        "removal_criteria": "Model generates correct prompt format 99%+ of the time without validation",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/unified_prompt_validator.py"
+      },
+      "plan_mode_exit_detector": {
+        "classification": "model-limitation",
+        "rationale": "Model exits plan mode prematurely and begins implementation without approval",
+        "removal_criteria": "Model reliably stays in plan mode until explicit user approval across 50+ sessions",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/plan_mode_exit_detector.py"
+      },
+      "validate_command_file_ops": {
+        "classification": "model-limitation",
+        "rationale": "Model directly edits infrastructure files (hooks, agents, commands) bypassing the /implement pipeline",
+        "removal_criteria": "Model never directly edits infrastructure files without /implement across 50+ sessions",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/validate_command_file_ops.py"
+      },
+      "stop_quality_gate": {
+        "classification": "model-limitation",
+        "rationale": "Model declares work done prematurely before all quality checks pass",
+        "removal_criteria": "Model consistently completes all quality checks before declaring done across 50+ sessions",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/stop_quality_gate.py"
+      },
+      "security_scan": {
+        "classification": "process-requirement",
+        "rationale": "Security scanning is always required regardless of model capability",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/security_scan.py"
+      },
+      "auto_format": {
+        "classification": "process-requirement",
+        "rationale": "Code formatting is a team-level standard, not a model behavior issue",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/auto_format.py"
+      },
+      "auto_test": {
+        "classification": "process-requirement",
+        "rationale": "Automated test execution is a standard engineering practice",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/auto_test.py"
+      },
+      "session_activity_logger": {
+        "classification": "process-requirement",
+        "rationale": "Session logging is an audit trail requirement independent of model behavior",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/session_activity_logger.py"
+      },
+      "validate_project_alignment": {
+        "classification": "process-requirement",
+        "rationale": "Alignment validation ensures work matches PROJECT.md goals, model-independent",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/validate_project_alignment.py"
+      },
+      "validate_session_quality": {
+        "classification": "process-requirement",
+        "rationale": "Session quality validation is a standard quality assurance practice",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/validate_session_quality.py"
+      },
+      "unified_pre_tool": {
+        "classification": "process-requirement",
+        "rationale": "Multi-layer security enforcement (MCP, sandbox, auth) is infrastructure",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/unified_pre_tool.py"
+      },
+      "unified_session_tracker": {
+        "classification": "process-requirement",
+        "rationale": "Session state tracking is operational infrastructure, not model-dependent",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/unified_session_tracker.py"
+      },
+      "auto_fix_docs": {
+        "classification": "process-requirement",
+        "rationale": "Automatic documentation sync is a process standard",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/auto_fix_docs.py"
+      },
+      "task_completed_handler": {
+        "classification": "process-requirement",
+        "rationale": "Pipeline orchestration and task completion handling is infrastructure",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/task_completed_handler.py"
+      },
+      "genai_prompts": {
+        "classification": "process-requirement",
+        "rationale": "GenAI prompt templates are infrastructure for LLM-as-judge testing",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/genai_prompts.py"
+      },
+      "genai_utils": {
+        "classification": "process-requirement",
+        "rationale": "GenAI utility functions are infrastructure for LLM-as-judge testing",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/genai_utils.py"
+      },
+      "conversation_archiver": {
+        "classification": "process-requirement",
+        "rationale": "Conversation archiving is an analytics and audit trail requirement independent of model behavior",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#773",
+        "location": "plugins/autonomous-dev/hooks/conversation_archiver.py"
+      },
+      "setup": {
+        "classification": "process-requirement",
+        "rationale": "Setup hook is installation infrastructure",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/hooks/setup.py"
+      }
+    },
+    "hard_gates": {
+      "implement.md:pre-staged-check": {
+        "classification": "process-requirement",
+        "rationale": "Git hygiene — checking for pre-staged files is model-independent",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/commands/implement.md STEP 1"
+      },
+      "implement.md:alignment": {
+        "classification": "process-requirement",
+        "rationale": "Strategic alignment validation is a process standard",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/commands/implement.md STEP 2"
+      },
+      "implement.md:test-gate": {
+        "classification": "process-requirement",
+        "rationale": "100% test pass rate is an engineering standard",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/commands/implement.md STEP 8"
+      },
+      "implement.md:no-new-skips": {
+        "classification": "model-limitation",
+        "rationale": "Model games skip markers to pass test gates without fixing failures",
+        "removal_criteria": "Model never adds @pytest.mark.skip to bypass test failures across 50+ sessions",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/commands/implement.md STEP 8"
+      },
+      "implement.md:anti-stubbing": {
+        "classification": "model-limitation",
+        "rationale": "Model replaces broken code with NotImplementedError stubs under pressure",
+        "removal_criteria": "Model consistently writes real implementations without stubbing across 50+ sessions",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/commands/implement.md STEP 8"
+      },
+      "implement.md:hook-registration": {
+        "classification": "process-requirement",
+        "rationale": "Hook registration wiring is an operational requirement",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/commands/implement.md STEP 9"
+      },
+      "implement.md:agent-count": {
+        "classification": "model-limitation",
+        "rationale": "Model skips required agents under context pressure to save tokens",
+        "removal_criteria": "Model invokes all required agents without enforcement across 50+ sessions",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/commands/implement.md STEP 9.5"
+      },
+      "implement.md:reviewer-completion-sequential": {
+        "classification": "model-limitation",
+        "rationale": "Model parallelizes reviewer and security-auditor when sequential ordering is required",
+        "removal_criteria": "Model reliably sequences validation agents without enforcement across 50+ sessions",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/commands/implement.md STEP 10"
+      },
+      "implement.md:remediation-gate": {
+        "classification": "process-requirement",
+        "rationale": "Remediation fallback mechanism is a pipeline safety net",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/commands/implement.md STEP 11"
+      },
+      "implement.md:doc-drift": {
+        "classification": "process-requirement",
+        "rationale": "Documentation drift detection is a documentation sync standard",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/commands/implement.md STEP 12"
+      },
+      "implement.md:doc-congruence": {
+        "classification": "process-requirement",
+        "rationale": "Documentation congruence validation is a documentation accuracy standard",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/commands/implement.md STEP 14"
+      },
+      "implement.md:ci-analyst-launch": {
+        "classification": "process-requirement",
+        "rationale": "Post-pipeline analysis launch is a continuous improvement process",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/commands/implement.md STEP 15"
+      },
+      "implementer.md:no-new-skips": {
+        "classification": "model-limitation",
+        "rationale": "Model adds @pytest.mark.skip to game test gates instead of fixing tests",
+        "removal_criteria": "Model never adds skip markers to bypass failures across 50+ sessions",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/agents/implementer.md"
+      },
+      "implementer.md:regression-test": {
+        "classification": "process-requirement",
+        "rationale": "Regression testing for bug fixes is an engineering standard",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/agents/implementer.md"
+      },
+      "implementer.md:hook-registration": {
+        "classification": "process-requirement",
+        "rationale": "Hook registration verification is an operational wiring requirement",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/agents/implementer.md"
+      },
+      "implementer.md:remediation-discipline": {
+        "classification": "model-limitation",
+        "rationale": "Model weakens or broadens code during fix-only remediation passes",
+        "removal_criteria": "Model scopes remediation fixes narrowly without weakening code across 50+ sessions",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/agents/implementer.md"
+      },
+      "reviewer.md:test-before-approve": {
+        "classification": "process-requirement",
+        "rationale": "Verification before approval is a standard review practice",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/agents/reviewer.md"
+      },
+      "reviewer.md:read-only": {
+        "classification": "model-limitation",
+        "rationale": "Model writes or modifies code during what should be a read-only review",
+        "removal_criteria": "Model never modifies files during review across 50+ sessions",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/agents/reviewer.md"
+      },
+      "security-auditor.md:owasp-checklist": {
+        "classification": "process-requirement",
+        "rationale": "Systematic OWASP security checklist is a security standard",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/agents/security-auditor.md"
+      },
+      "doc-master.md:covers-scan": {
+        "classification": "model-limitation",
+        "rationale": "Model skips systematic documentation scan and goes directly to writing",
+        "removal_criteria": "Model consistently performs covers: scan before writing docs across 50+ sessions",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/agents/doc-master.md"
+      },
+      "doc-master.md:doc-drift-verdict": {
+        "classification": "model-limitation",
+        "rationale": "Model omits the required structured verdict output from doc-drift checks",
+        "removal_criteria": "Model consistently outputs structured verdict in correct format across 50+ sessions",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/agents/doc-master.md"
+      }
+    },
+    "forbidden_lists": {
+      "implement.md:coordinator-forbidden": {
+        "classification": "model-limitation",
+        "rationale": "Model skips pipeline steps, summarizes instead of executing, declares good-enough on failures",
+        "removal_criteria": "Model follows coordinator duties without any forbidden behavior across 50+ sessions",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/commands/implement.md COORDINATOR FORBIDDEN LIST"
+      },
+      "implementer.md:no-new-skips": {
+        "classification": "model-limitation",
+        "rationale": "Model adds skip decorators to game test gates rather than fixing failures",
+        "removal_criteria": "Model resolves test failures through fixing or adjusting, never skipping, across 50+ sessions",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/agents/implementer.md FORBIDDEN (no-new-skips)"
+      },
+      "reviewer.md:no-write": {
+        "classification": "model-limitation",
+        "rationale": "Model modifies code files during review instead of staying read-only",
+        "removal_criteria": "Model never writes to code files during review across 50+ sessions",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/agents/reviewer.md FORBIDDEN"
+      },
+      "security-auditor.md:no-skip-categories": {
+        "classification": "process-requirement",
+        "rationale": "Systematic coverage of all OWASP categories is a security standard",
+        "removal_criteria": null,
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/agents/security-auditor.md FORBIDDEN"
+      },
+      "doc-master.md:covers-first": {
+        "classification": "model-limitation",
+        "rationale": "Model skips the systematic covers: scan and jumps to writing documentation",
+        "removal_criteria": "Model consistently runs covers: scan before writing docs across 50+ sessions",
+        "review_status": "initial",
+        "added_issue": "#566",
+        "location": "plugins/autonomous-dev/agents/doc-master.md FORBIDDEN"
+      }
+    }
+  }
+}

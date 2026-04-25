@@ -16,34 +16,53 @@ from typing import Any
 
 from ..api.anthropic_models import AnthropicToolDef
 
-# STUBS captured against Claude Code v2.x (last reviewed 2026-04). Update
+# STUBS captured against Claude Code v2.1.x (last reviewed 2026-04). Update
 # this table when Anthropic ships new tools or renames existing ones; the
 # test suite pins the key set so renames break CI.
 STUBS: dict[str, str] = {
+    # ── Core file + shell ────────────────────────────────────────────
     "Bash": "Executes bash commands with optional timeout.",
     "Read": "Reads a file by path with optional offset/limit.",
     "Write": "Writes content to a file path.",
     "Edit": "Replaces old_string with new_string in a file.",
     "Glob": "Finds files matching a glob pattern.",
     "Grep": "Searches for regex pattern in files.",
-    "Task": "Launches a subagent for complex tasks.",
-    "TodoWrite": "Creates and manages a task list.",
-    "ExitPlanMode": "Exits plan mode for user approval.",
     "NotebookEdit": "Edits Jupyter notebook cells.",
-    "WebFetch": "Fetches and processes content from a URL.",
-    "WebSearch": "Searches the web for information.",
+    # ── Background processes + monitoring ────────────────────────────
     "BashOutput": "Gets output from a background shell.",
     "KillShell": "Stops a running background shell.",
-    "Skill": "Executes a named skill in the conversation.",
-    "SlashCommand": "Executes a slash command.",
+    "Monitor": "Streams events from a long-running command.",
+    "PushNotification": "Sends a desktop notification.",
+    # ── Web ──────────────────────────────────────────────────────────
+    "WebFetch": "Fetches and processes content from a URL.",
+    "WebSearch": "Searches the web for information.",
+    # ── Subagents + tasks ────────────────────────────────────────────
+    "Task": "Launches a subagent for complex tasks.",
+    "TodoWrite": "Creates and manages a task list.",
     "TaskCreate": "Creates a task in the task list.",
     "TaskUpdate": "Updates a task status or details.",
     "TaskGet": "Retrieves a task by ID.",
     "TaskList": "Lists all tasks.",
     "TaskOutput": "Gets output from a background task.",
     "TaskStop": "Stops a running background task.",
-    "AskUserQuestion": "Asks the user a question during execution.",
+    # ── Plan mode + user prompts ─────────────────────────────────────
+    "ExitPlanMode": "Exits plan mode for user approval.",
     "EnterPlanMode": "Transitions into plan mode for planning.",
+    "AskUserQuestion": "Asks the user a question during execution.",
+    # ── Skills + slash commands ──────────────────────────────────────
+    "Skill": "Executes a named skill in the conversation.",
+    "SlashCommand": "Executes a slash command.",
+    "ToolSearch": "Searches for tools by name or query.",
+    # ── Worktrees + scheduling + remote ──────────────────────────────
+    "EnterWorktree": "Enters a git worktree for parallel work.",
+    "ExitWorktree": "Exits the current git worktree.",
+    "CronCreate": "Creates a scheduled cron-based task.",
+    "CronDelete": "Deletes a scheduled task.",
+    "CronList": "Lists scheduled tasks.",
+    "RemoteTrigger": "Triggers a remote agent or job.",
+    # ── MCP introspection ────────────────────────────────────────────
+    "ListMcpResourcesTool": "Lists resources from an MCP server.",
+    "ReadMcpResourceTool": "Reads a resource from an MCP server.",
 }
 
 _KEEP_KEYS = (

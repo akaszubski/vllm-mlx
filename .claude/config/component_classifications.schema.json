@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Component Classifications Registry",
+  "description": "Schema for classifying harness components as model-limitation or process-requirement for evolution tracking.",
+  "type": "object",
+  "required": ["version", "last_reviewed", "classifications"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version of the registry"
+    },
+    "last_reviewed": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "Date of last review (YYYY-MM-DD)"
+    },
+    "classifications": {
+      "type": "object",
+      "required": ["hooks", "hard_gates", "forbidden_lists"],
+      "properties": {
+        "hooks": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/classification_entry"
+          }
+        },
+        "hard_gates": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/classification_entry"
+          }
+        },
+        "forbidden_lists": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/classification_entry"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "classification_entry": {
+      "type": "object",
+      "required": ["classification", "rationale", "removal_criteria", "review_status"],
+      "properties": {
+        "classification": {
+          "type": "string",
+          "enum": ["model-limitation", "process-requirement"]
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "removal_criteria": {
+          "type": ["string", "null"],
+          "description": "Conditions under which this component can be removed. Must be non-null for model-limitation, null for process-requirement."
+        },
+        "review_status": {
+          "type": "string",
+          "enum": ["initial", "reviewed", "candidate-for-removal", "removed"]
+        },
+        "added_issue": {
+          "type": "string",
+          "description": "GitHub issue number where this component was added"
+        },
+        "location": {
+          "type": "string",
+          "description": "File path or section reference for this component"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

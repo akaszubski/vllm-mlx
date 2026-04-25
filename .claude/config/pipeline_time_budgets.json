@@ -1,0 +1,11 @@
+{
+  "_comment": "Per-agent time budgets. warning_pct controls when soft warning fires (0.8 = 80% of budget).",
+  "researcher-local": {"budget_seconds": 90, "warning_pct": 0.8},
+  "researcher": {"budget_seconds": 120, "warning_pct": 0.8},
+  "planner": {"budget_seconds": 180, "warning_pct": 0.8},
+  "implementer": {"budget_seconds": 480, "warning_pct": 0.8},
+  "reviewer": {"budget_seconds": 180, "warning_pct": 0.8},
+  "security-auditor": {"budget_seconds": 180, "warning_pct": 0.8},
+  "doc-master": {"budget_seconds": 120, "warning_pct": 0.8},
+  "test-master": {"budget_seconds": 180, "warning_pct": 0.8}
+}

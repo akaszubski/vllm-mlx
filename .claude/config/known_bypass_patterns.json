@@ -1,0 +1,421 @@
+{
+  "_description": "Known model intent bypass patterns detected by continuous-improvement-analyst. Each pattern has detection rules and the HARD GATE that should prevent it.",
+  "patterns": [
+    {
+      "id": "test_gate_bypass",
+      "name": "Test gate bypass",
+      "description": "Model declares partial test results 'good enough' and proceeds to validation",
+      "issue": "#206",
+      "hard_gate": "STEP 5 test gate in implement.md",
+      "detection": {
+        "type": "log_pattern",
+        "indicators": [
+          "Test failures > 0 when STEP 6 agents invoked",
+          "Coordinator output contains: 'good enough', 'solid foundation', 'most tests pass', 'acceptable coverage'"
+        ]
+      },
+      "severity": "critical"
+    },
+    {
+      "id": "anti_stubbing",
+      "name": "Stub as implementation",
+      "description": "Model replaces broken code with NotImplementedError or pass placeholders",
+      "issue": "#310",
+      "hard_gate": "No Stubs HARD GATE in implementer.md",
+      "detection": {
+        "type": "file_content",
+        "indicators": [
+          "New files contain 'raise NotImplementedError'",
+          "New files contain 'pass  # TODO'",
+          "New files contain 'raise NotImplemented'"
+        ]
+      },
+      "severity": "critical"
+    },
+    {
+      "id": "hook_registration_skip",
+      "name": "Hook registration skip",
+      "description": "Hook file created but not registered in settings templates or manifest",
+      "issue": "#348",
+      "hard_gate": "STEP 5.5 hook registration check in implement.md",
+      "detection": {
+        "type": "congruence",
+        "indicators": [
+          "Hook .py file written but settings templates not modified",
+          "Hook .py file written but install_manifest.json not modified"
+        ]
+      },
+      "severity": "critical"
+    },
+    {
+      "id": "missing_terminal_actions",
+      "name": "Missing terminal actions",
+      "description": "Pipeline completes without push or issue close",
+      "issue": "#353",
+      "hard_gate": "STEP B4/STEP 8 in implement.md",
+      "detection": {
+        "type": "pipeline_completeness",
+        "indicators": [
+          "Pipeline mode=batch-issues but no 'gh issue close' in logs",
+          "Pipeline mode=batch but no 'git push' in logs",
+          "AUTO_GIT_PUSH=true but no push action logged"
+        ]
+      },
+      "severity": "warning"
+    },
+    {
+      "id": "context_compression",
+      "name": "Context compression",
+      "description": "Coordinator passes summarized output to next agent instead of full results",
+      "issue": null,
+      "hard_gate": "COORDINATOR FORBIDDEN LIST in implement.md",
+      "detection": {
+        "type": "agent_io",
+        "indicators": [
+          "Agent Task prompt significantly shorter than previous agent output (>80% reduction)",
+          "Phrases in coordinator: 'in summary', 'the key points are', 'briefly'"
+        ]
+      },
+      "severity": "warning"
+    },
+    {
+      "id": "step_skipping",
+      "name": "Pipeline step skipping",
+      "description": "One or more pipeline steps not executed without explicit user override",
+      "issue": null,
+      "hard_gate": "COORDINATOR FORBIDDEN LIST in implement.md",
+      "detection": {
+        "type": "pipeline_completeness",
+        "indicators": [
+          "Full pipeline mode but fewer than 8 agent invocations",
+          "Expected agent type not found in session logs",
+          "STEP numbers not sequential in log timeline"
+        ]
+      },
+      "severity": "critical"
+    },
+    {
+      "id": "command_bypass",
+      "name": "Command routing bypass",
+      "description": "UserPromptSubmit nudge fired suggesting /implement but model proceeded with raw edits",
+      "issue": null,
+      "hard_gate": "CLAUDE.md Critical Rules: 'Use the right command for every action'",
+      "detection": {
+        "type": "log_pattern",
+        "indicators": [
+          "UserPromptSubmit log contains workflow nudge text but subsequent tool calls are raw Write/Edit without pipeline context",
+          "Code files modified outside any /implement pipeline session",
+          "No pipeline_state.json created despite code changes"
+        ]
+      },
+      "severity": "warning"
+    },
+    {
+      "id": "error_ignored",
+      "name": "Error silently dropped",
+      "description": "PostToolUse error not followed by a fix attempt",
+      "issue": null,
+      "hard_gate": "Pipeline should address all errors before proceeding",
+      "detection": {
+        "type": "log_pattern",
+        "indicators": [
+          "PostToolUse entry with error/failure output followed by unrelated tool call",
+          "Bash command exit code non-zero but next action doesn't address the failure",
+          "Test failure logged but no subsequent test-related tool calls"
+        ]
+      },
+      "severity": "warning"
+    },
+    {
+      "id": "stop_softened_language",
+      "name": "Stop hook softened language",
+      "description": "Stop hook assistant text uses softened language when errors/failures exist in the session",
+      "issue": null,
+      "hard_gate": "Model should accurately report failures, not soften them",
+      "detection": {
+        "type": "log_pattern",
+        "indicators": [
+          "Stop hook text matches softened_language_indicators AND session has unresolved errors",
+          "Final summary declares success but PostToolUse logs contain unaddressed failures",
+          "Stop text says 'most' or 'nearly' when describing test/build results with failures"
+        ]
+      },
+      "severity": "warning"
+    },
+    {
+      "id": "hook_silent_failure",
+      "name": "Hook silent failure",
+      "description": "Expected hook layer missing entirely from session logs",
+      "issue": null,
+      "hard_gate": "All 4 hook layers must fire: UserPromptSubmit, PreToolUse, PostToolUse, Stop",
+      "detection": {
+        "type": "log_pattern",
+        "indicators": [
+          "Session has tool calls but zero PreToolUse entries (hook not registered)",
+          "Session has tool calls but zero PostToolUse entries (hook not registered)",
+          "Session has user messages but zero UserPromptSubmit entries",
+          "Session completed but zero Stop entries"
+        ]
+      },
+      "severity": "critical"
+    },
+    {
+      "id": "silent_exception_swallowing",
+      "name": "Silent exception swallowing in generated code",
+      "description": "Generated code catches exceptions without re-raising, logging with exc_info, or using contextlib.suppress()",
+      "issue": "#715",
+      "hard_gate": "Reviewer Observability BLOCKING check in reviewer.md",
+      "detection": {
+        "type": "file_content",
+        "indicators": [
+          "except Exception: followed by log/print without raise or exc_info=True",
+          "except Exception:\\n            pass",
+          "bare except: without raise in the handler",
+          "contextlib.suppress() wrapping non-trivial operations",
+          "finally block with return/break/continue that suppresses pending exception"
+        ]
+      },
+      "severity": "critical"
+    },
+    {
+      "id": "prompt_file_edit_bypass",
+      "name": "Prompt file classified as doc to bypass pipeline",
+      "description": "Model classifies agents/*.md or commands/*.md as 'documentation' to justify direct Edit calls, bypassing /implement pipeline including TDD, security review, and CI gates",
+      "issue": null,
+      "hard_gate": "CLAUDE.md Critical Rules: NEVER direct-edit agents/*.md, commands/*.md, hooks/*.py, lib/*.py",
+      "detection": {
+        "type": "log_pattern",
+        "indicators": [
+          "Edit tool used on plugins/autonomous-dev/agents/*.md without preceding pipeline_state entry",
+          "Edit tool used on plugins/autonomous-dev/commands/*.md without preceding pipeline_state entry",
+          "Stop hook text contains 'markdown prompt files, not code' or 'direct editing is appropriate'"
+        ]
+      },
+      "severity": "critical"
+    },
+    {
+      "id": "plan_mode_direct_edit_justification",
+      "name": "Plan Mode used to justify direct prompt file edits",
+      "description": "Model exits plan mode with approved plan, then uses 'plan called for .md changes' reasoning to bypass /implement and directly edit agents/*.md or commands/*.md",
+      "issue": null,
+      "hard_gate": "CLAUDE.md Critical Rules: NEVER direct-edit agents/*.md, commands/*.md + plan_mode_exit_detector hook (Issue #358)",
+      "issue": "#358",
+      "detection": {
+        "type": "log_pattern",
+        "indicators": [
+          "Stop hook text contains 'plan explicitly called for' or 'prompt-only changes' AND Edit tool used on agents/*.md or commands/*.md",
+          "Edit on agents/*.md or commands/*.md within 60 seconds of ExitPlanMode with no preceding pipeline_state.json creation",
+          "Stop hook text contains 'markdown prompt files, not code'"
+        ]
+      },
+      "severity": "critical"
+    },
+    {
+      "id": "skip_accumulation",
+      "name": "Skip accumulation across sessions",
+      "description": "Model adds @pytest.mark.skip to failing tests instead of fixing them, accumulating skipped tests across sessions that are never resolved",
+      "issue": "#364",
+      "hard_gate": "No New Skips HARD GATE in implementer.md and implement.md STEP 5",
+      "detection": {
+        "type": "file_content",
+        "indicators": [
+          "New @pytest.mark.skip additions in committed test files",
+          "Skip count increases between sessions",
+          "Tests marked 'TDD RED phase - implementation pending' persist across multiple sessions"
+        ]
+      },
+      "severity": "critical"
+    },
+    {
+      "id": "batch_group_pipeline",
+      "name": "Batch issues grouped into single pipeline",
+      "description": "Coordinator runs a single shared pipeline for all batch issues instead of per-issue dedicated pipelines. All test files for multiple issues written in the same time window. Agent count is 5-7 total, not 9 per issue.",
+      "issue": "#386",
+      "hard_gate": "STEP B3 point 4: Per-Issue Agent Count Verification",
+      "detection": {
+        "type": "pipeline_completeness",
+        "indicators": [
+          "Batch session has fewer than 9 * num_issues total Agent invocations",
+          "Multiple issues' test files created within the same 60-second window",
+          "A single pipeline pass covers all issues instead of sequential per-issue pipelines",
+          "Total agent count equals a single pipeline (5-9) rather than N pipelines, indicating issues were grouped or combined"
+        ]
+      },
+      "severity": "critical",
+      "remediation": "Process each issue sequentially with a dedicated 9-agent pipeline. Verify agent count per issue before advancing."
+    },
+    {
+      "id": "batch_progressive_shortcutting",
+      "name": "Batch progressive shortcutting",
+      "description": "Model runs full pipeline for early issues but progressively reduces agents for later issues in batch mode",
+      "issue": "#363",
+      "hard_gate": "STEP B3 point 4 Per-Issue Agent Count HARD GATE in implement-batch.md",
+      "detection": {
+        "type": "pipeline_completeness",
+        "indicators": [
+          "Issue N+1 has fewer agent invocations than issue N in same batch",
+          "Later issues in batch missing researcher, reviewer, or security-auditor agents",
+          "Batch session has fewer than 9 * num_issues total agent invocations"
+        ]
+      },
+      "severity": "critical"
+    },
+    {
+      "id": "sequential_step_parallelized",
+      "name": "Sequential steps incorrectly parallelized",
+      "description": "Pipeline steps that must be sequential (e.g., test-master → implementer) were launched in the same message window",
+      "issue": "#367",
+      "hard_gate": "COORDINATOR FORBIDDEN LIST in implement.md: 'Combining or parallelizing sequential steps'",
+      "detection": {
+        "type": "agent_io",
+        "indicators": [
+          "test-master and implementer launched within 5 seconds of each other",
+          "planner and implementer launched within 5 seconds",
+          "implementer and reviewer launched within 5 seconds"
+        ]
+      },
+      "severity": "critical"
+    },
+    {
+      "id": "parallel_step_serialized",
+      "name": "Parallel steps unnecessarily serialized",
+      "description": "Pipeline steps that should run in parallel (e.g., both researchers) were run sequentially",
+      "issue": "#367",
+      "hard_gate": null,
+      "detection": {
+        "type": "agent_io",
+        "indicators": [
+          "researcher-local and researcher launched more than 30 seconds apart",
+          "reviewer, security-auditor, doc-master launched more than 30 seconds apart"
+        ]
+      },
+      "severity": "info"
+    },
+    {
+      "id": "context_dropping",
+      "name": "Context dropping between agents",
+      "description": "Agent prompt word count is less than 20% of prior agent result word count, suggesting coordinator summarized instead of passing full results",
+      "issue": "#367",
+      "hard_gate": "COORDINATOR FORBIDDEN LIST in implement.md: 'Summarizing agent output instead of passing full results'",
+      "detection": {
+        "type": "agent_io",
+        "indicators": [
+          "Agent prompt_word_count / prior agent result_word_count < 0.2",
+          "Coordinator output contains summarization phrases: 'in summary', 'key points are', 'briefly'"
+        ]
+      },
+      "severity": "warning"
+    },
+    {
+      "id": "hard_gate_ordering_bypass",
+      "name": "Hard gate ordering bypass",
+      "description": "STEP 6 validation agents (reviewer, security-auditor, doc-master) launched before STEP 5 test gate passed",
+      "issue": "#367",
+      "hard_gate": "STEP 5 test gate HARD GATE + COORDINATOR FORBIDDEN LIST: 'Running STEP 6 before STEP 5 passes'",
+      "detection": {
+        "type": "pipeline_completeness",
+        "indicators": [
+          "STEP 6 agent timestamps earlier than any successful test_run timestamp",
+          "No test_run entries but STEP 6 agents present",
+          "test_run with success=false followed by STEP 6 agent invocations"
+        ]
+      },
+      "severity": "critical"
+    },
+    {
+      "id": "reviewer_blocking_ignored",
+      "name": "Reviewer BLOCKING issues ignored",
+      "description": "Reviewer agent returned BLOCKING issues but no subsequent fix commits were made",
+      "issue": "#367",
+      "hard_gate": "Reviewer BLOCKING requires fix before proceeding",
+      "detection": {
+        "type": "log_pattern",
+        "indicators": [
+          "Reviewer result contains 'BLOCKING' but no subsequent Edit/Write tool calls to the flagged files",
+          "Reviewer result contains 'APPROVAL: NO' but pipeline proceeded to doc-master",
+          "Security-auditor result contains 'FAIL' but no subsequent fix"
+        ]
+      },
+      "severity": "critical"
+    },
+    {
+      "id": "batch_last_issue_cia_skip",
+      "name": "Batch last issue CIA skip",
+      "description": "Model skips continuous-improvement-analyst for the last issue in a batch, exploiting the tendency to rush finalization under context pressure",
+      "issue": "#712",
+      "hard_gate": "Hook-level batch CIA gate in unified_pre_tool.py (Issue #712)",
+      "detection": {
+        "type": "pipeline_completeness",
+        "indicators": [
+          "Last issue in batch missing continuous-improvement-analyst completion",
+          "git commit attempted in batch worktree without CIA for all issues",
+          "Per-issue agent count shows CIA present for issues 1..N-1 but absent for issue N"
+        ]
+      },
+      "severity": "critical",
+      "remediation": "Hook blocks git commit until all batch issues have CIA completion. Set SKIP_BATCH_CIA_GATE=1 to bypass."
+    },
+    {
+      "id": "research_skip_entire_batch",
+      "name": "Research skipped for entire batch",
+      "description": "Both researcher-local and researcher agents skipped for all issues in a batch using pre-researched content exemption. While skipping research for a single issue with fresh /create-issue cache is valid, skipping for ALL issues suggests the exemption is being over-applied.",
+      "issue": "#671",
+      "hard_gate": "STEP 4 research agents in implement.md",
+      "detection": {
+        "type": "batch_pattern",
+        "indicators": [
+          "All issues in batch have researcher-local and researcher marked as skipped",
+          "Justification contains 'pre-researched' or 'issue body' for every issue",
+          "No issue in batch actually ran research agents"
+        ]
+      },
+      "severity": "warning",
+      "constraint": "Research skip is valid per-issue when /create-issue provided rich content. Flag as WARNING (not CRITICAL) when >50% of batch issues skip research."
+    }
+  ],
+  "expected_end_states": {
+    "quick": {
+      "required_agents": ["implementer"],
+      "required_actions": ["test_run"],
+      "conditional_actions": {
+        "git_commit": "AUTO_GIT_ENABLED=true",
+        "git_push": "AUTO_GIT_PUSH=true"
+      }
+    },
+    "full_pipeline": {
+      "required_agents": ["researcher-local", "researcher", "planner", "implementer", "spec-validator", "reviewer", "security-auditor", "doc-master", "continuous-improvement-analyst"],
+      "optional_agents_by_mode": {"--tdd-first": ["test-master"]},
+      "required_actions": ["test_run", "git_commit"],
+      "conditional_actions": {
+        "git_push": "AUTO_GIT_PUSH=true",
+        "issue_close": "feature references GitHub issue"
+      }
+    },
+    "batch-issues": {
+      "required_agents": ["researcher-local", "researcher", "planner", "implementer", "spec-validator", "reviewer", "security-auditor", "doc-master", "continuous-improvement-analyst"],
+      "optional_agents_by_mode": {"--tdd-first": ["test-master"]},
+      "required_actions": ["test_run", "git_commit", "git_push", "issue_close"],
+      "conditional_actions": {},
+      "note": "All required_agents apply per issue, not per batch. Each issue gets a dedicated pipeline with all agents. test-master only in --tdd-first mode. See Issue #386, #404.",
+      "per_issue": true
+    },
+    "batch": {
+      "required_agents": ["researcher-local", "researcher", "planner", "implementer", "spec-validator", "reviewer", "security-auditor", "doc-master", "continuous-improvement-analyst"],
+      "optional_agents_by_mode": {"--tdd-first": ["test-master"]},
+      "required_actions": ["test_run", "git_commit", "git_push"],
+      "conditional_actions": {}
+    }
+  },
+  "softened_language_indicators": [
+    "good enough",
+    "solid foundation",
+    "most tests pass",
+    "acceptable coverage",
+    "we can address later",
+    "minor issue",
+    "not critical",
+    "works for now",
+    "close enough",
+    "partial success"
+  ]
+}
