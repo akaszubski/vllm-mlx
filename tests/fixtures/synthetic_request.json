@@ -1,0 +1,56 @@
+{
+  "model": "test",
+  "max_tokens": 1024,
+  "system": "You are Claude Code. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. Detailed instructions. ",
+  "messages": [
+    {
+      "role": "user",
+      "content": "list files"
+    }
+  ],
+  "tools": [
+    {
+      "name": "Bash",
+      "description": "Executes a bash command. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. Long text. ",
+      "input_schema": {
+        "type": "object",
+        "description": "Bash params",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "The command"
+          },
+          "timeout": {
+            "type": "number",
+            "description": "Timeout",
+            "examples": [
+              30
+            ]
+          }
+        },
+        "required": [
+          "command"
+        ]
+      }
+    },
+    {
+      "name": "WebSearch",
+      "description": "Searches web. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. More text. ",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "CustomTool",
+      "description": "A custom one. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. Lots more. ",
+      "input_schema": {
+        "type": "object"
+      }
+    }
+  ]
+}
