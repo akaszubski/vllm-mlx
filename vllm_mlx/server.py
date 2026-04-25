@@ -161,6 +161,7 @@ from .endpoint_model_policies import (
 from .engine.base import suspend_cancellation
 from .lifecycle import ModelSpec, ResidencyManager
 from .metrics import metrics as _metrics
+from .optimizer import OptimizerConfig, optimize_request
 from .tool_parsers import ToolParserManager, get_parser_stop_tokens
 
 logging.basicConfig(level=logging.INFO)
@@ -518,6 +519,9 @@ _auth_warning_logged: bool = False
 
 # Reasoning parser (for models like Qwen3, DeepSeek-R1)
 _reasoning_parser = None  # ReasoningParser instance when enabled
+
+# Anthropic /v1/messages prompt optimizer (off unless --optimize-prompts)
+_optimizer_config: OptimizerConfig = OptimizerConfig()
 
 # Tool calling configuration
 _enable_auto_tool_choice: bool = False
@@ -4221,6 +4225,25 @@ async def create_anthropic_message(
             raise
     anthropic_request = AnthropicRequest(**body)
 
+    if _optimizer_config.enabled:
+        from .optimizer import ToolChoiceMismatchError
+
+        try:
+            anthropic_request, _opt_stats = optimize_request(
+                anthropic_request, _optimizer_config
+            )
+        except ToolChoiceMismatchError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if _opt_stats.tools_before:
+            logger.info(
+                "[OPTIMIZER] tools %d->%d stubbed=%d desc_chars %d->%d",
+                _opt_stats.tools_before,
+                _opt_stats.tools_after,
+                _opt_stats.tools_stubbed,
+                _opt_stats.descriptions_chars_before,
+                _opt_stats.descriptions_chars_after,
+            )
+
     _validate_model_name(anthropic_request.model)
     effective_max_tokens = _resolve_request_max_tokens(anthropic_request.max_tokens)
 
@@ -5431,6 +5454,7 @@ def main():
     global _api_key, _default_timeout, _rate_limiter, _metrics_enabled
     global _default_temperature, _default_top_p, _default_chat_template_kwargs
     global _max_audio_upload_bytes, _max_tts_input_chars
+    global _optimizer_config
     _api_key = args.api_key
     _default_timeout = args.timeout
     _metrics_enabled = args.enable_metrics
@@ -5442,6 +5466,18 @@ def main():
     _default_chat_template_kwargs = args.default_chat_template_kwargs
     _max_audio_upload_bytes = args.max_audio_upload_mb * 1024 * 1024
     _max_tts_input_chars = args.max_tts_input_chars
+
+    from .optimizer import build_config_from_args
+
+    _optimizer_config = build_config_from_args(args)
+    if _optimizer_config.enabled:
+        logger.info(
+            "[OPTIMIZER] enabled allowlist=%s stub_tools=%s",
+            _optimizer_config.tool_allowlist
+            if _optimizer_config.tool_allowlist
+            else "<all>",
+            _optimizer_config.stub_tools,
+        )
 
     # Configure rate limiter
     if args.rate_limit > 0:
@@ -5677,6 +5713,29 @@ Examples:
         type=int,
         default=DEFAULT_MAX_TTS_INPUT_CHARS,
         help="Maximum number of characters accepted by /v1/audio/speech (default: 4096)",
+    )
+    # Anthropic /v1/messages prompt optimizer (tool allowlist + stubbing)
+    parser.add_argument(
+        "--optimize-prompts",
+        action="store_true",
+        help="Enable Anthropic /v1/messages request optimizer (off by default)",
+    )
+    parser.add_argument(
+        "--optimize-tool-allowlist",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated list of tool names to keep; others are dropped from "
+            "the request before inference. Requires --optimize-prompts."
+        ),
+    )
+    parser.add_argument(
+        "--optimize-stub-tools",
+        action="store_true",
+        help=(
+            "Replace verbose tool descriptions with short stubs and simplify "
+            "JSON schemas. Requires --optimize-prompts."
+        ),
     )
     return parser
 

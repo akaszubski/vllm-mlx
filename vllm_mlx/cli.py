@@ -75,6 +75,17 @@ def serve_command(args):
         server._enable_auto_tool_choice = False
         server._tool_call_parser = None
 
+    from .optimizer import build_config_from_args
+
+    server._optimizer_config = build_config_from_args(args)
+    if server._optimizer_config.enabled:
+        cfg = server._optimizer_config
+        print(
+            f"  Optimizer: ENABLED "
+            f"allowlist={cfg.tool_allowlist if cfg.tool_allowlist else '<all>'} "
+            f"stub_tools={cfg.stub_tools}"
+        )
+
     # Configure generation defaults
     if args.default_temperature is not None:
         server._default_temperature = args.default_temperature
@@ -1180,6 +1191,29 @@ Examples:
         "--offline",
         action="store_true",
         help="Offline mode — only use locally cached models",
+    )
+    # Anthropic /v1/messages prompt optimizer (tool allowlist + stubbing)
+    serve_parser.add_argument(
+        "--optimize-prompts",
+        action="store_true",
+        help="Enable Anthropic /v1/messages request optimizer (off by default)",
+    )
+    serve_parser.add_argument(
+        "--optimize-tool-allowlist",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated tool names to keep; others are dropped from the "
+            "request before inference. Requires --optimize-prompts."
+        ),
+    )
+    serve_parser.add_argument(
+        "--optimize-stub-tools",
+        action="store_true",
+        help=(
+            "Replace verbose tool descriptions with short stubs and simplify "
+            "JSON schemas. Requires --optimize-prompts."
+        ),
     )
     # Bench command
     bench_parser = subparsers.add_parser("bench", help="Run benchmark")
