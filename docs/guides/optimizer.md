@@ -21,6 +21,9 @@ cleanly. The optimizer is **off by default**; enable it with
 vllm-mlx serve mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit \
     --port 8000 \
     --continuous-batching \
+    --enable-auto-tool-choice \
+    --tool-call-parser qwen \
+    --reasoning-parser qwen3 \
     --optimize-prompts \
     --optimize-tool-allowlist Read,Edit,Bash,Grep,Glob,Write \
     --optimize-stub-tools
@@ -30,6 +33,12 @@ export ANTHROPIC_BASE_URL=http://localhost:8000
 export ANTHROPIC_API_KEY=not-needed
 claude
 ```
+
+The same command works for thinking-mode reasoning models (Qwen3-Instruct,
+DeepSeek-R1, etc.) — the server auto-disables `enable_thinking` for any
+request that carries `tools`, so agent loops get committed answers instead
+of `<think>`-only responses. See [Reasoning models with tool-using clients](#reasoning-models-with-tool-using-clients)
+below.
 
 ## CLI flags
 
@@ -142,6 +151,62 @@ configurations side by side.
 - Insertion point in the server: `vllm_mlx/server.py`,
   `create_anthropic_message()`, immediately after
   `AnthropicRequest(**body)`.
+
+## Reasoning models with tool-using clients
+
+Reasoning models (Qwen3-Instruct, DeepSeek-R1, and similar) emit
+`<think>...</think>` blocks before — and sometimes *instead of* — committing
+to a final answer. On simple prompts they tend to think briefly and then
+emit end-of-stream without ever producing user-visible text. Tool-using
+clients (Claude Code, Cline, OpenHands, any agent loop) cannot consume
+`<think>`-only responses: they need a `text` block or a `tool_use` to feed
+back into the next turn, and the loop halts silently when neither arrives.
+
+vllm-mlx auto-handles this: **when a request carries `tools` and
+`enable_thinking` isn't already set explicitly, the server defaults
+`enable_thinking=False` for that request**. The model then commits to a
+text or tool_use response without thinking. You'll see one INFO log per
+gated request:
+
+```
+[thinking-gate] auto-disabled enable_thinking for tool-using request
+```
+
+Chat-style requests (no `tools` attached) are *not* gated — thinking still
+works the way you're used to seeing it in interactive Claude Code.
+
+The auto-gate covers all three endpoints (`/v1/messages`, `/v1/chat/completions`,
+`/v1/responses`).
+
+### Overrides
+
+Per-request override (any client): include `chat_template_kwargs` in the
+request body to opt back into thinking on a tool-using turn:
+
+```json
+{
+  "model": "...",
+  "tools": [...],
+  "messages": [...],
+  "chat_template_kwargs": {"enable_thinking": true}
+}
+```
+
+Server-wide override: `--default-chat-template-kwargs '{"enable_thinking": true}'`
+forces thinking on for every request, regardless of `tools`.
+
+### Drift detection
+
+If a model still produces `<think>`-only output (e.g., a future reasoning
+model whose thinking is bound by an unrecognized template branch), the
+server emits a one-time-per-process warning so the issue is visible:
+
+```
+[thinking-leak] model X produced reasoning_content (N chars) but no text or
+tool_calls. If chat-style request: increase --max-tokens or set
+chat_template_kwargs.enable_thinking=False. If tool-using: the auto-gate
+should have prevented this — check chat_template_kwargs precedence.
+```
 
 ## Caveats
 
