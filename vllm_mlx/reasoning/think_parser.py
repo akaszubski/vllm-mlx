@@ -58,9 +58,18 @@ class BaseThinkingReasoningParser(ReasoningParser):
         self._content_started = False
         self._content_buffer = ""
 
-    def reset_state(self):
-        """Reset state machine for a new streaming request."""
-        self._phase = "pre_think"
+    def reset_state(self, *, start_in_content_mode: bool = False):
+        """Reset state machine for a new streaming request.
+
+        Args:
+            start_in_content_mode: When True, skip the pre_think/thinking phases
+                and treat all incoming deltas as content. Used when the request
+                has ``enable_thinking=False`` resolved (so the prompt has no
+                ``<think>`` injection and the model emits pure content). Without
+                this hint, the parser defaults to the implicit-thinking
+                assumption and misclassifies plain text deltas as reasoning.
+        """
+        self._phase = "content" if start_in_content_mode else "pre_think"
         self._content_started = False
         self._content_buffer = ""
 

@@ -239,6 +239,70 @@ def _resolve_chat_template_kwargs(
     return resolved
 
 
+def _apply_thinking_gate_for_tools(
+    request_tools: object, resolved_kwargs: dict[str, object]
+) -> dict[str, object]:
+    """Auto-disable enable_thinking for tool-using requests when not set.
+
+    Tool-using clients (Claude Code, Cline, OpenHands, ...) cannot consume
+    ``<think>``-only responses; the agent loop needs a tool_use or text block
+    to feed back into the next turn. When the request carries tools and
+    ``enable_thinking`` is not already in resolved_kwargs (set neither
+    per-request nor via ``--default-chat-template-kwargs``), default it off so
+    the model commits to a tool_use or text block.
+
+    Pass-through if ``request_tools`` is empty/None or the kwarg is already set.
+    Returns the (possibly extended) kwargs dict.
+    """
+    if request_tools and "enable_thinking" not in resolved_kwargs:
+        resolved_kwargs = {**resolved_kwargs, "enable_thinking": False}
+        logger.info(
+            "[thinking-gate] auto-disabled enable_thinking for tool-using request"
+        )
+    return resolved_kwargs
+
+
+def _reasoning_parser_starts_in_content(chat_kwargs: dict[str, object]) -> bool:
+    """True when resolved chat_template_kwargs explicitly disabled thinking.
+
+    The streaming reasoning parser defaults to "implicit thinking" mode and
+    classifies plain-text deltas as reasoning. When ``enable_thinking=False``
+    has been resolved (per-request, server default, or auto-gate), the prompt
+    has no ``<think>`` injection so the model emits pure content. Tell the
+    parser to skip the pre_think/thinking phases by starting in content mode.
+    """
+    ct = chat_kwargs.get("chat_template_kwargs") or {}
+    if not isinstance(ct, dict):
+        return False
+    return ct.get("enable_thinking") is False
+
+
+# Track models we've already emitted a thinking-leak warning for so we log
+# each distinct configuration only once per process.
+_thinking_leak_warned: set[str] = set()
+
+
+def _warn_thinking_leak_once(model_name: str, reasoning_chars: int) -> None:
+    """Warn once per model when reasoning is non-empty but no text/tool_use.
+
+    Drift detector: surfaces cases where a model emits only ``<think>...</think>``
+    with no committed answer, so users see the issue rather than silently
+    receiving empty results.
+    """
+    if not model_name or model_name in _thinking_leak_warned:
+        return
+    _thinking_leak_warned.add(model_name)
+    logger.warning(
+        "[thinking-leak] model %s produced reasoning_content (%d chars) but "
+        "no text or tool_calls. If chat-style request: increase --max-tokens "
+        "or set chat_template_kwargs.enable_thinking=False. If tool-using: "
+        "the auto-gate should have prevented this — check chat_template_kwargs "
+        "precedence.",
+        model_name,
+        reasoning_chars,
+    )
+
+
 @dataclass
 class PreparedChatInvocation:
     """Fully prepared inputs for a single engine.chat/stream_chat call."""
@@ -413,6 +477,9 @@ def _prepare_chat_completion_invocation(
     resolved_chat_template_kwargs = _resolve_chat_template_kwargs(
         request.chat_template_kwargs
     )
+    resolved_chat_template_kwargs = _apply_thinking_gate_for_tools(
+        request.tools, resolved_chat_template_kwargs
+    )
     if resolved_chat_template_kwargs:
         chat_kwargs["chat_template_kwargs"] = resolved_chat_template_kwargs
 
@@ -476,6 +543,9 @@ def _prepare_anthropic_invocation(
     }
     resolved_chat_template_kwargs = _resolve_chat_template_kwargs(
         openai_request.chat_template_kwargs
+    )
+    resolved_chat_template_kwargs = _apply_thinking_gate_for_tools(
+        openai_request.tools, resolved_chat_template_kwargs
     )
     if resolved_chat_template_kwargs:
         chat_kwargs["chat_template_kwargs"] = resolved_chat_template_kwargs
@@ -1698,6 +1768,9 @@ def _prepare_responses_request(
     resolved_chat_template_kwargs = _resolve_chat_template_kwargs(
         chat_request.chat_template_kwargs
     )
+    resolved_chat_template_kwargs = _apply_thinking_gate_for_tools(
+        request.tools, resolved_chat_template_kwargs
+    )
     if resolved_chat_template_kwargs:
         chat_kwargs["chat_template_kwargs"] = resolved_chat_template_kwargs
     if request.tools:
@@ -1884,7 +1957,9 @@ async def _stream_responses_request(request: ResponsesRequest) -> AsyncIterator[
         return events
 
     if _reasoning_parser:
-        _reasoning_parser.reset_state()
+        _reasoning_parser.reset_state(
+            start_in_content_mode=_reasoning_parser_starts_in_content(chat_kwargs)
+        )
 
     global _tool_parser_instance
     tool_parser = None
@@ -4397,8 +4472,15 @@ async def create_anthropic_message(
                     )
                 )
 
-        if not content_blocks:
+        # Always ensure a text or tool_use block is present. Without this,
+        # responses with only a thinking block leave tool-using clients
+        # (Claude Code, agent loops) with nothing actionable to consume.
+        # Mirrors the streaming path's empty-text-block fallback.
+        has_actionable = any(b.type in ("text", "tool_use") for b in content_blocks)
+        if not has_actionable:
             content_blocks.append(AnthropicResponseContentBlock(type="text", text=""))
+            if reasoning_text:
+                _warn_thinking_leak_once(_model_name, len(reasoning_text))
 
         stop_reason = _convert_anthropic_stop_reason(
             "tool_calls" if tool_calls else output.finish_reason
@@ -4617,12 +4699,16 @@ async def _stream_anthropic_messages(
     )
 
     if use_reasoning:
-        _reasoning_parser.reset_state()
+        _reasoning_parser.reset_state(
+            start_in_content_mode=_reasoning_parser_starts_in_content(chat_kwargs)
+        )
 
     # Block index tracking: with reasoning parser we use index 0 for
     # thinking and index 1 for text; without parser, index 0 for text.
     thinking_block_started = False
     text_block_started = False
+    text_content_seen = False  # any real text delta emitted (not just placeholder)
+    reasoning_chars = 0  # accumulated thinking content for leak diagnostics
     thinking_index = 0
     text_index = 1 if use_reasoning else 0
 
@@ -4710,6 +4796,7 @@ async def _stream_anthropic_messages(
                 continue
 
             if delta_msg.reasoning:
+                reasoning_chars += len(delta_msg.reasoning)
                 if not thinking_block_started:
                     yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': thinking_index, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
                     thinking_block_started = True
@@ -4757,6 +4844,7 @@ async def _stream_anthropic_messages(
                     yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': text_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
                     text_block_started = True
                 yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': text_index, 'delta': {'type': 'text_delta', 'text': content_to_emit}})}\n\n"
+                text_content_seen = True
 
         # Close any open thinking block that was never followed by text
         if thinking_block_started and not text_block_started:
@@ -4772,6 +4860,10 @@ async def _stream_anthropic_messages(
             openai_request,
             engine=engine,
         )
+
+        # Surface "thinking happened but no committed answer" once per model.
+        if thinking_block_started and not text_content_seen and not tool_calls:
+            _warn_thinking_leak_once(_model_name, reasoning_chars)
 
         # Close text block
         if text_block_started:
@@ -4950,7 +5042,9 @@ async def stream_chat_completion(
 
     # Reset reasoning parser state for this stream
     if _reasoning_parser:
-        _reasoning_parser.reset_state()
+        _reasoning_parser.reset_state(
+            start_in_content_mode=_reasoning_parser_starts_in_content(kwargs)
+        )
 
     # Track accumulated text for reasoning parser
     accumulated_text = ""

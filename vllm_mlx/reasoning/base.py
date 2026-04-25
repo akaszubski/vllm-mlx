@@ -99,13 +99,20 @@ class ReasoningParser(ABC):
         """
         pass
 
-    def reset_state(self):  # noqa: B027
+    def reset_state(self, *, start_in_content_mode: bool = False):  # noqa: B027
         """
         Reset any internal state for a new request.
 
-        Called before starting to process a new streaming request.
-        Override in subclasses if stateful parsing is needed.
-        This is intentionally a default no-op implementation.
+        Called before starting to process a new streaming request. Override
+        in subclasses if stateful parsing is needed. Default implementation
+        is a no-op.
+
+        Args:
+            start_in_content_mode: When True, parsers that distinguish a
+                "thinking" phase should skip it and treat the stream as
+                content from the first delta. Used by callers that know the
+                model will not emit thinking tags (e.g., resolved
+                ``chat_template_kwargs.enable_thinking=False``).
         """
         pass
 
