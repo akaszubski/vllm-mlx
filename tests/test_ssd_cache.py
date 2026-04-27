@@ -213,16 +213,17 @@ from vllm_mlx.ssd_cache import (
 )
 
 
-class MockMLXArray:
-    """Minimal mock for MLX array with shape, dtype, and numpy conversion."""
+def MockMLXArray(data):
+    """Return a real mlx.core.array.
 
-    def __init__(self, data):
-        self._data = np.array(data)
-        self.shape = self._data.shape
-        self.dtype = type("dtype", (), {"size": self._data.dtype.itemsize})()
+    Originally a numpy-backed duck-typed mock, but the serializer now uses
+    mx.save_safetensors which needs a real mlx.core.array. The MLX array's
+    own .shape and .dtype.size attributes provide the same surface the mock
+    exposed, so call sites that read those still work unchanged.
+    """
+    import mlx.core as mx
 
-    def __array__(self):
-        return self._data
+    return mx.array(np.asarray(data))
 
 
 class MockKVCacheLayer:
@@ -292,6 +293,45 @@ class TestLayerSerializer:
             np.array(restored["state"][0]),
             np.array(arr0),
         )
+
+    def test_kv_cache_serializer_bf16_round_trip(self, tmp_path):
+        # Regression: production models (e.g. Qwen3-Coder-30B) hold KV in
+        # bfloat16. The previous safetensors.numpy path crashed because
+        # numpy has no native bf16 dtype. Must round-trip losslessly.
+        import mlx.core as mx
+
+        keys = mx.random.normal((1, 8, 32, 64)).astype(mx.bfloat16)
+        values = mx.random.normal((1, 8, 32, 64)).astype(mx.bfloat16)
+        mx.eval(keys, values)
+        layer = MockKVCacheLayer(keys=keys, values=values, offset=32)
+
+        serializer = KVCacheSerializer()
+        file_path = str(tmp_path / "layer_bf16.safetensors")
+        metadata = serializer.serialize_layer(layer, 0, file_path)
+
+        restored = serializer.deserialize_layer(file_path, metadata)
+        assert restored["keys"].dtype == mx.bfloat16
+        assert restored["values"].dtype == mx.bfloat16
+        assert mx.array_equal(restored["keys"], keys).item()
+        assert mx.array_equal(restored["values"], values).item()
+
+    def test_arrays_cache_serializer_bf16_round_trip(self, tmp_path):
+        import mlx.core as mx
+
+        arr0 = mx.random.normal((1, 64, 128)).astype(mx.bfloat16)
+        arr1 = mx.random.normal((1, 64, 128)).astype(mx.bfloat16)
+        mx.eval(arr0, arr1)
+        layer = MockArraysCacheLayer(state=[arr0, arr1])
+
+        serializer = ArraysCacheSerializer()
+        file_path = str(tmp_path / "arrays_bf16.safetensors")
+        metadata = serializer.serialize_layer(layer, 0, file_path)
+
+        restored = serializer.deserialize_layer(file_path, metadata)
+        assert len(restored["state"]) == 2
+        assert restored["state"][0].dtype == mx.bfloat16
+        assert mx.array_equal(restored["state"][0], arr0).item()
+        assert mx.array_equal(restored["state"][1], arr1).item()
 
     def test_get_serializer_for_kvcache(self):
         layer = MockKVCacheLayer(keys=None, values=None, offset=0)

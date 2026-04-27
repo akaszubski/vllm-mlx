@@ -418,16 +418,18 @@ class KVCacheSerializer(LayerSerializer):
     def serialize_layer(
         self, layer: Any, layer_idx: int, file_path: str
     ) -> dict[str, Any]:
-        from safetensors.numpy import save_file
+        # Use MLX-native safetensors. safetensors.numpy chokes on bfloat16
+        # because numpy has no native bf16 dtype and MLX's PEP-3118 buffer
+        # for bf16 reports format='B' with itemsize=2, which numpy rejects.
+        import mlx.core as mx
 
-        keys_np = np.array(layer.keys)
-        values_np = np.array(layer.values)
-
-        tensors = {
-            f"layer_{layer_idx}_keys": keys_np,
-            f"layer_{layer_idx}_values": values_np,
-        }
-        save_file(tensors, file_path)
+        mx.save_safetensors(
+            file_path,
+            {
+                f"layer_{layer_idx}_keys": layer.keys,
+                f"layer_{layer_idx}_values": layer.values,
+            },
+        )
 
         metadata = {
             "layer_type": "KVCache",
@@ -442,10 +444,10 @@ class KVCacheSerializer(LayerSerializer):
         return metadata
 
     def deserialize_layer(self, file_path: str, metadata: dict[str, Any]) -> dict:
-        from safetensors.numpy import load_file
+        import mlx.core as mx
 
         layer_idx = metadata["layer_idx"]
-        tensors = load_file(file_path)
+        tensors = mx.load(file_path)
 
         result = {
             "keys": tensors[f"layer_{layer_idx}_keys"],
@@ -467,14 +469,13 @@ class ArraysCacheSerializer(LayerSerializer):
     def serialize_layer(
         self, layer: Any, layer_idx: int, file_path: str
     ) -> dict[str, Any]:
-        from safetensors.numpy import save_file
+        import mlx.core as mx
 
         state = layer.state
-        tensors = {}
-        for i, arr in enumerate(state):
-            tensors[f"layer_{layer_idx}_state_{i}"] = np.array(arr)
-
-        save_file(tensors, file_path)
+        tensors = {
+            f"layer_{layer_idx}_state_{i}": arr for i, arr in enumerate(state)
+        }
+        mx.save_safetensors(file_path, tensors)
 
         return {
             "layer_type": "ArraysCache",
@@ -483,11 +484,11 @@ class ArraysCacheSerializer(LayerSerializer):
         }
 
     def deserialize_layer(self, file_path: str, metadata: dict[str, Any]) -> dict:
-        from safetensors.numpy import load_file
+        import mlx.core as mx
 
         layer_idx = metadata["layer_idx"]
         num_arrays = metadata["num_arrays"]
-        tensors = load_file(file_path)
+        tensors = mx.load(file_path)
 
         state = []
         for i in range(num_arrays):
@@ -607,6 +608,24 @@ class SSDCacheTier:
 
         Returns True if enqueued, False if queue is full (entry dropped).
         """
+        # Materialise on the caller's stream before handoff. MLX arrays are
+        # bound to the stream that allocated them; if the writer thread later
+        # forces evaluation on its own stream we get
+        # "Stream(gpu, N) not in current thread" → libc++abi terminate.
+        try:
+            import mlx.core as mx
+
+            for layer in cache:
+                if hasattr(layer, "keys") and getattr(layer, "keys", None) is not None:
+                    mx.eval(layer.keys, layer.values)
+                elif hasattr(layer, "state"):
+                    state = layer.state
+                    if state:
+                        mx.eval(*state)
+        except Exception:
+            logger.exception("[ssd_cache] failed to materialise layers before spill")
+            return False
+
         try:
             self._spill_queue.put_nowait((tokens, cache, memory_bytes))
             return True
