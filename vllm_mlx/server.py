@@ -603,7 +603,16 @@ _RESPONSES_STORE_MAX_SIZE: int = 1000
 # Pattern to strip leaked tool call markup from content output.
 # Safety net: the tool parser should consume these, but if it doesn't
 # (e.g. malformed JSON, stray closing tags), strip them before emitting.
-_TOOL_MARKUP_PATTERN = re.compile(r"</?tool_call>|</?tool_call_reasoning>")
+# Also catches malformed Qwen3-Coder leaks: <function (no =name) blocks and
+# orphan <parameter=...>...</parameter> fragments that survive the parser.
+_TOOL_MARKUP_PATTERN = re.compile(
+    r"</?tool_call>|</?tool_call_reasoning>"
+    r"|<function(?:[\s\n][^=>][^>]*)?>"
+    r"|</function>"
+    r"|<parameter=[^>]+>.*?</parameter>"
+    r"|</?parameter[^>]*>",
+    re.DOTALL,
+)
 _STREAMING_TOOL_MARKERS = (
     "<tool_call>",
     "<|tool_call>",
@@ -615,6 +624,9 @@ _STREAMING_TOOL_MARKERS = (
 )
 _STREAMING_BARE_BRACKET_MARKER = re.compile(r"\[\w+\(\{")
 _STREAMING_BARE_BRACKET_PARTIAL = re.compile(r"\[\w+\($")
+# Malformed bare <function opener (no =name). Catches Qwen3-Coder degenerate
+# states that the literal "<function=" marker above misses.
+_STREAMING_BARE_FUNCTION_OPENER = re.compile(r"<function(?:[\s\n]|$)")
 
 
 def _sanitize_log_text(value: object, limit: int | None = None) -> str:
@@ -2402,6 +2414,7 @@ def _streaming_tool_markup_possible(text: str) -> bool:
         any(marker in text for marker in _STREAMING_TOOL_MARKERS)
         or _STREAMING_BARE_BRACKET_MARKER.search(text) is not None
         or _STREAMING_BARE_BRACKET_PARTIAL.search(text) is not None
+        or _STREAMING_BARE_FUNCTION_OPENER.search(text) is not None
     )
 
 

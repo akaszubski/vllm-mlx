@@ -868,6 +868,55 @@ class TestQwen3CoderParser:
         args = json.loads(result.tool_calls[0]["arguments"])
         assert args["city"] == "Berlin"
 
+    def test_malformed_function_opener_does_not_leak(self):
+        """Qwen3-Coder degenerate state: <function with no =name must not leak as content.
+
+        Reproduces the failure mode where the model emits `<function\\n<parameter=...>`
+        without a function name. The parser cannot recover a tool call but it must
+        also not emit the raw XML as assistant content — otherwise the next turn's
+        history contains the malformed shape and the model imitates it (doom loop).
+        """
+        parser = HermesToolParser()
+        text = (
+            "Let me check the status:\n"
+            "<function\n"
+            "<function\n"
+            "<parameter=command>\n"
+            'curl -X GET "http://192.168.0.215:8123/api"\n'
+            "</parameter>\n"
+            "</function>"
+        )
+        result = parser.extract_tool_calls(text)
+        assert not result.tools_called
+        assert "<function" not in (result.content or "")
+        assert "<parameter=" not in (result.content or "")
+        assert "</function>" not in (result.content or "")
+        # The pre-amble should survive.
+        assert "Let me check the status" in (result.content or "")
+
+    def test_malformed_function_opener_streaming_suppressed(self):
+        """Streaming path must suppress malformed <function openers entirely."""
+        parser = HermesToolParser()
+        # Simulate the model streaming bare `<function\n` then the parameter block.
+        chunks = [
+            "<function\n",
+            "<parameter=command>\n",
+            "ls -la\n",
+            "</parameter>\n",
+            "</function>",
+        ]
+        accumulated = ""
+        emitted = ""
+        for chunk in chunks:
+            previous = accumulated
+            accumulated += chunk
+            result = parser.extract_tool_calls_streaming(previous, accumulated, chunk)
+            if result and "content" in result:
+                emitted += result["content"]
+        # No raw XML should have leaked to the user during streaming.
+        assert "<function" not in emitted
+        assert "<parameter=" not in emitted
+
     def test_bare_multi_function_without_wrapper(self):
         """Test multiple bare <function=...> blocks without <tool_call> wrapper."""
         parser = HermesToolParser()
