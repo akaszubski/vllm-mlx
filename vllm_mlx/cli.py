@@ -300,6 +300,7 @@ def serve_command(args):
         warm_prompts_path=getattr(args, "warm_prompts", None),
         auto_unload_idle_seconds=args.auto_unload_idle_seconds,
         lazy_load_model=args.lazy_load_model,
+        chat_template_override=args.chat_template,
     )
 
     # Start server
@@ -1158,6 +1159,18 @@ Examples:
             "Default chat template kwargs to apply to all requests when request "
             "chat_template_kwargs is omitted or empty; empty request kwargs use "
             'existing server defaults (JSON object, e.g. {"enable_thinking": true})'
+        ),
+    )
+    serve_parser.add_argument(
+        "--chat-template",
+        type=str,
+        default=None,
+        help=(
+            "Path to a Jinja chat template file that overrides the model's "
+            "default chat_template after load. Use to ship community-fixed "
+            "templates (e.g. Jan Kessler's Qwen3-Coder fix from "
+            "https://github.com/QwenLM/Qwen3-Coder/issues/475) without "
+            "modifying the HuggingFace cache."
         ),
     )
     # Embedding model option

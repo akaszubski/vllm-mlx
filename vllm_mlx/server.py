@@ -183,6 +183,7 @@ _default_timeout: float = 300.0  # Default request timeout in seconds (5 minutes
 _default_temperature: float | None = None  # Set via --default-temperature
 _default_top_p: float | None = None  # Set via --default-top-p
 _default_chat_template_kwargs: dict[str, object] | None = None
+_chat_template_override_path: str | None = None
 _metrics_enabled = False
 _max_audio_upload_bytes: int = DEFAULT_MAX_AUDIO_UPLOAD_BYTES
 _max_tts_input_chars: int = DEFAULT_MAX_TTS_INPUT_CHARS
@@ -944,6 +945,11 @@ async def lifespan(app: FastAPI):
         ):
             await _engine.start()
 
+        # Apply deferred --chat-template override now that the engine tokenizer is loaded.
+        # No-op if no override pending or if it was already applied in load_model().
+        if _engine is not None:
+            _apply_chat_template_override()
+
         # Load persisted cache from disk (AFTER engine start — AsyncEngineCore must exist)
         if (
             _residency_manager is None
@@ -1357,8 +1363,13 @@ def _parse_tool_calls_with_parser(
             ]
             return result.content or "", tool_calls
         else:
-            # Fallback: specific parser didn't find tool calls,
-            # try generic parser which handles more formats (e.g. Nemotron XML)
+            # Configured parser didn't extract tool calls. If it stripped content
+            # (malformed XML cleanup, special-token removal), respect that intent
+            # and return the cleaned text. Only fall back to the generic parser
+            # when the configured parser returned the input unchanged — that's
+            # when the generic parser may catch a format the configured one missed.
+            if result.content is not None and result.content != output_text:
+                return result.content, None
             return parse_tool_calls(output_text, request_dict)
     except Exception as e:
         logger.warning("Tool parser error: %s", _sanitize_log_text(e, limit=500))
@@ -2474,6 +2485,42 @@ def load_reranker_model(
     _rerank_engine.load()
 
 
+def _apply_chat_template_override() -> bool:
+    """Apply pending chat-template override to the engine tokenizer if possible.
+
+    Idempotent: returns True once the override is in place, False if the
+    tokenizer isn't ready yet (engine hasn't loaded). Logs success on the
+    first successful application.
+    """
+    global _chat_template_override_path
+    path_str = _chat_template_override_path
+    if not path_str:
+        return True
+    from pathlib import Path
+    override_path = Path(path_str)
+    if not override_path.is_file():
+        raise FileNotFoundError(
+            f"--chat-template path does not exist: {override_path}"
+        )
+    tokenizer_obj = _get_engine_tokenizer(_engine)
+    if tokenizer_obj is None:
+        return False
+    template_text = override_path.read_text(encoding="utf-8")
+    try:
+        tokenizer_obj.chat_template = template_text
+    except AttributeError as exc:
+        raise RuntimeError(
+            f"Engine tokenizer does not support chat_template assignment: {exc}"
+        ) from exc
+    logger.info(
+        f"Chat template overridden from {override_path} "
+        f"({len(template_text)} chars)"
+    )
+    # Clear the pending path so we don't reapply on every reload.
+    _chat_template_override_path = None
+    return True
+
+
 def load_model(
     model_name: str,
     use_batching: bool = False,
@@ -2494,6 +2541,7 @@ def load_model(
     warm_prompts_path: str | None = None,
     auto_unload_idle_seconds: float = 0.0,
     lazy_load_model: bool = False,
+    chat_template_override: str | None = None,
 ):
     """
     Load a model (auto-detects MLLM vs LLM).
@@ -2672,6 +2720,21 @@ def load_model(
     _engine.preserve_native_tool_format = _detect_native_tool_support()
     if _engine.preserve_native_tool_format:
         logger.info(f"Native tool format enabled for parser: {_tool_call_parser}")
+
+    if chat_template_override:
+        from pathlib import Path
+        override_path = Path(chat_template_override)
+        if not override_path.is_file():
+            raise FileNotFoundError(
+                f"--chat-template path does not exist: {override_path}"
+            )
+        global _chat_template_override_path
+        _chat_template_override_path = str(override_path)
+        # Apply now if the engine already exposes a tokenizer (SimpleEngine path).
+        # For BatchedEngine the tokenizer is loaded later in lifespan startup, so
+        # _apply_chat_template_override() is invoked again from lifespan after
+        # _engine.start() completes.
+        _apply_chat_template_override()
 
     logger.info(f"Default max tokens: {_default_max_tokens}")
     logger.info(f"Max request tokens: {_max_request_tokens}")
