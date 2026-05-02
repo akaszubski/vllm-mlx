@@ -88,6 +88,17 @@ class HermesToolParser(ToolParser):
     )
     # Bare Nemotron XML: <function=name>...</function> without <tool_call> wrapper
     BARE_FUNCTION_PATTERN = re.compile(r"<function=([^>]+)>(.*?)</function>", re.DOTALL)
+    # Malformed opener: <function followed by whitespace/newline (no =name).
+    # Observed in Qwen3-Coder degenerate states; the model loses the function name
+    # and emits <function\n<parameter=...>...</parameter>... — has no recoverable
+    # tool name, so we suppress it during streaming and strip it post-hoc.
+    MALFORMED_FUNCTION_OPENER = re.compile(r"<function(?:[\s\n]|$)")
+    MALFORMED_FUNCTION_BLOCK = re.compile(
+        r"<function(?:[\s\n][^=>][^>]*)?>?.*?(?:</function>|$)", re.DOTALL
+    )
+    ORPHAN_PARAMETER_BLOCK = re.compile(
+        r"<parameter=[^>]+>.*?</parameter>", re.DOTALL
+    )
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -225,6 +236,18 @@ class HermesToolParser(ToolParser):
                 except json.JSONDecodeError:
                     pass
 
+        # Strip any orphan malformed <function ...</function> or <parameter=...>
+        # fragments that survived the extraction passes above. These are the
+        # Qwen3-Coder degenerate-state leaks; we cannot recover a tool name from
+        # them, so we drop them rather than letting them surface as content.
+        if self.MALFORMED_FUNCTION_OPENER.search(cleaned_text):
+            cleaned_text = self.MALFORMED_FUNCTION_BLOCK.sub("", cleaned_text)
+        if "<parameter=" in cleaned_text or "</parameter>" in cleaned_text:
+            cleaned_text = self.ORPHAN_PARAMETER_BLOCK.sub("", cleaned_text)
+            cleaned_text = re.sub(r"</?parameter[^>]*>", "", cleaned_text)
+            cleaned_text = re.sub(r"</?function[^>]*>", "", cleaned_text)
+        cleaned_text = cleaned_text.strip()
+
         # Include reasoning in content if present
         if reasoning_matches:
             reasoning_text = " ".join(reasoning_matches)
@@ -324,6 +347,18 @@ class HermesToolParser(ToolParser):
                         )
 
             return {"content": delta_text}
+
+        # Malformed opener: <function followed by whitespace (no =name). Model is
+        # in a degenerate state and we cannot recover a tool name. Suppress the
+        # delta until </function> arrives, then drop the whole block silently —
+        # better an empty turn than poisoning the conversation history with raw
+        # <function ... <parameter=...> XML that the model will imitate next turn.
+        if self.MALFORMED_FUNCTION_OPENER.search(current_text):
+            if "</function>" not in current_text:
+                return None
+            # Block closed: emit nothing for this delta. The orphan block will be
+            # stripped by extract_tool_calls / the server-side safety net.
+            return None
 
         # Fallback: check for raw JSON tool calls (detect closing brace pattern)
         if '{"name":' in current_text and '"arguments":' in current_text:
