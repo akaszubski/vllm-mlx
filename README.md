@@ -52,7 +52,7 @@ claude
 ### Throughput & memory
 - **Continuous batching**: high throughput for concurrent requests
 - **Paged KV cache**: memory-efficient with prefix sharing
-- **SSD-tiered KV cache**: spill prefix cache to disk for long-context agents (`--ssd-cache-dir`)
+- **SSD-tiered KV cache**: spill prefix cache to disk for long-context agents (`--ssd-cache-dir`). Bf16-safe via MLX-native safetensors ([#2](https://github.com/akaszubski/vllm-mlx/pull/2), fixes [#1](https://github.com/akaszubski/vllm-mlx/issues/1)).
 - **Warm prompts**: preload popular prefixes at startup (`--warm-prompts`) for 1.3-2.25x TTFT
 - **Prefix cache**: trie-based, shared across requests
 
