@@ -9,6 +9,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `SamplingParams.n` group sampling (1..64) and `best_of` field for `/v1/chat/completions` and `/v1/completions`. Enables GRPO/RLHF rollout group sampling against a single colocated MLX server. Streaming (`stream=True`) with `n>1` rejected with HTTP 400 (OpenAI-compatible error envelope). Prefix cache automatically dedups the shared prompt-KV across rollouts. Anthropic `/v1/messages` is unaffected (native Anthropic API does not expose `n`). E2E model-load integration tests deferred to a follow-up patch. (realign#1308 / Plan-1.5 patch #1)
 - MLX-backend `WeightTransferEngine` for RLHF/GRPO weight hot-reload.
   Registers via `WeightTransferEngineFactory.register_engine('mlx', ...)`
   with lazy import so non-Apple-Silicon installs are unaffected. (realign#1307, realign#1309)

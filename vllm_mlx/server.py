@@ -56,7 +56,7 @@ from contextlib import suppress
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from starlette.routing import Match
@@ -3871,6 +3871,18 @@ async def _acquire_default_engine_for_request(
 async def create_completion(request: CompletionRequest, raw_request: Request):
     """Create a text completion."""
     _validate_model_name(request.model)
+    if request.stream and request.n > 1:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "message": "stream=true is not supported when n>1",
+                    "type": "invalid_request_error",
+                    "code": "stream_n_unsupported",
+                    "param": "stream",
+                }
+            },
+        )
     effective_max_tokens = _resolve_request_max_tokens(request.max_tokens)
     tracker = _metrics.track_inference("completions", stream=request.stream)
 
@@ -3948,6 +3960,58 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 generate_kwargs["specprefill"] = request.specprefill
             if request.specprefill_keep_pct is not None:
                 generate_kwargs["specprefill_keep_pct"] = request.specprefill_keep_pct
+            if request.n > 1:
+                # Group sampling: fan out N parallel rollouts for this prompt.
+                # Prompt tokens are counted once per prompt (shared prefix KV);
+                # completion tokens are summed across all rollouts.
+                try:
+                    gather_coro = asyncio.gather(
+                        *(
+                            engine.generate(**generate_kwargs)
+                            for _ in range(request.n)
+                        )
+                    )
+                    if raw_request is None:
+                        outputs = await gather_coro
+                    else:
+                        outputs = await _wait_with_disconnect(
+                            gather_coro,
+                            raw_request,
+                            timeout=_remaining_request_timeout(
+                                total_timeout, deadline
+                            ),
+                            timeout_detail_seconds=total_timeout,
+                        )
+                except HTTPException as exc:
+                    tracker.finish(
+                        result=_metrics_result_from_status(exc.status_code)
+                    )
+                    raise
+                if outputs is None:
+                    tracker.finish(
+                        result="client_closed",
+                        prompt_tokens=total_prompt_tokens,
+                        completion_tokens=total_completion_tokens,
+                    )
+                    return Response(status_code=499)  # Client closed request
+
+                for k, output in enumerate(outputs):
+                    choices.append(
+                        CompletionChoice(
+                            index=i * request.n + k,
+                            text=output.text,
+                            finish_reason=output.finish_reason,
+                        )
+                    )
+                    total_completion_tokens += output.completion_tokens
+                # Count prompt tokens ONCE per prompt (not per rollout).
+                total_prompt_tokens += (
+                    outputs[0].prompt_tokens
+                    if hasattr(outputs[0], "prompt_tokens")
+                    else 0
+                )
+                continue
+
             try:
                 if raw_request is None:
                     output = await engine.generate(**generate_kwargs)
@@ -4053,6 +4117,18 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     ```
     """
     _validate_model_name(request.model)
+    if request.stream and request.n > 1:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "message": "stream=true is not supported when n>1",
+                    "type": "invalid_request_error",
+                    "code": "stream_n_unsupported",
+                    "param": "stream",
+                }
+            },
+        )
     effective_max_tokens = _resolve_request_max_tokens(request.max_tokens)
     tracker = _metrics.track_inference("chat_completions", stream=request.stream)
     total_timeout, deadline = _start_request_budget(request.timeout)
@@ -4122,6 +4198,106 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             return response
 
         start_time = time.perf_counter()
+
+        if request.n > 1:
+            # Group sampling: fan out N parallel chat rollouts.
+            # Prompt tokens are counted once (shared prefix KV across rollouts);
+            # completion tokens are summed across all rollouts.
+            try:
+                gather_coro = asyncio.gather(
+                    *(
+                        engine.chat(
+                            messages=prepared.messages, **prepared.chat_kwargs
+                        )
+                        for _ in range(request.n)
+                    )
+                )
+                outputs = await _wait_with_disconnect(
+                    gather_coro,
+                    raw_request,
+                    timeout=_remaining_request_timeout(total_timeout, deadline),
+                    timeout_detail_seconds=total_timeout,
+                )
+            except HTTPException as exc:
+                tracker.finish(result=_metrics_result_from_status(exc.status_code))
+                raise
+            if outputs is None:
+                tracker.finish(result="client_closed")
+                return Response(status_code=499)  # Client closed request
+
+            elapsed = time.perf_counter() - start_time
+            total_completion = sum(o.completion_tokens for o in outputs)
+            tokens_per_sec = total_completion / elapsed if elapsed > 0 else 0
+            logger.info(
+                f"Chat completion (n={request.n}): {total_completion} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
+            )
+
+            choices = []
+            for i, output in enumerate(outputs):
+                (
+                    reasoning_text,
+                    cleaned_text,
+                    tool_calls,
+                ) = _extract_reasoning_and_tool_calls(
+                    output.text,
+                    request,
+                    allow_reasoning=(
+                        getattr(request, "enable_thinking", None) is not False
+                        and prepared.json_logits_processor is None
+                    ),
+                    engine=engine,
+                )
+
+                # Process response_format if specified (per-output)
+                if prepared.response_format and not tool_calls:
+                    json_input = cleaned_text or output.text
+                    _, parsed_json, is_valid, error = parse_json_output(
+                        json_input, prepared.response_format
+                    )
+                    if parsed_json is not None:
+                        cleaned_text = json.dumps(parsed_json)
+                    if not is_valid:
+                        if prepared.json_logits_processor is not None:
+                            logger.error(
+                                "Constrained decoding produced invalid JSON: %s",
+                                error,
+                            )
+                        else:
+                            logger.warning(f"JSON validation failed: {error}")
+
+                finish_reason = "tool_calls" if tool_calls else output.finish_reason
+                choices.append(
+                    ChatCompletionChoice(
+                        index=i,
+                        message=AssistantMessage(
+                            content=(
+                                clean_output_text(cleaned_text)
+                                if cleaned_text
+                                else None
+                            ),
+                            reasoning=reasoning_text,
+                            tool_calls=tool_calls,
+                        ),
+                        finish_reason=finish_reason,
+                    )
+                )
+
+            # Count prompt tokens ONCE (shared across rollouts).
+            prompt_tokens = outputs[0].prompt_tokens
+            tracker.finish(
+                result="success",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=total_completion,
+            )
+            return ChatCompletionResponse(
+                model=_model_name,
+                choices=choices,
+                usage=Usage(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=total_completion,
+                    total_tokens=prompt_tokens + total_completion,
+                ),
+            )
 
         try:
             output = await _wait_with_disconnect(

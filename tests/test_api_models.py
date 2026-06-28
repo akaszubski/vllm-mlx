@@ -724,3 +724,288 @@ class TestModelSerialization:
         )
         data = schema.model_dump(by_alias=True)
         assert "schema" in data
+
+
+# =============================================================================
+# Group sampling (SamplingParams.n) — Plan-1.5 Patch #1
+# =============================================================================
+
+import platform
+import sys
+from collections import OrderedDict
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from pydantic import ValidationError
+
+# Server-dependent tests need Apple Silicon (the server module imports MLX).
+_requires_arm_darwin = pytest.mark.skipif(
+    sys.platform != "darwin" or platform.machine() != "arm64",
+    reason="Server import requires Apple Silicon (MLX)",
+)
+
+
+def _gs_make_output(
+    text: str = "ok",
+    prompt_tokens: int = 10,
+    completion_tokens: int = 3,
+    finish_reason: str = "stop",
+) -> SimpleNamespace:
+    """Build a SimpleNamespace mirroring engine.generate/chat return shape."""
+    return SimpleNamespace(
+        text=text,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        finish_reason=finish_reason,
+    )
+
+
+def _gs_mock_engine(*outputs: SimpleNamespace) -> MagicMock:
+    """Mock engine whose .chat and .generate return the supplied outputs in order."""
+    engine = MagicMock()
+    engine.model_name = "test-model"
+    engine.preserve_native_tool_format = False
+    engine.is_mllm = False
+    engine.tokenizer = None
+    engine._tokenizer = None
+    output_list = list(outputs)
+    engine.chat = AsyncMock(side_effect=output_list)
+    engine.generate = AsyncMock(side_effect=output_list)
+    return engine
+
+
+@pytest.fixture()
+def _gs_client():
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.server import app
+
+    return TestClient(app)
+
+
+@pytest.fixture()
+def _gs_server_state():
+    """Snapshot and restore module-level server state for isolation."""
+    import vllm_mlx.server as srv
+
+    original_engine = srv._engine
+    original_model_name = srv._model_name
+    original_api_key = srv._api_key
+    original_default_chat_template_kwargs = getattr(
+        srv, "_default_chat_template_kwargs", None
+    )
+    original_residency_manager = srv._residency_manager
+    original_default_model_key = srv._default_model_key
+    original_responses_store = srv._responses_store
+    original_responses_store_max = srv._RESPONSES_STORE_MAX_SIZE
+
+    srv._engine = None
+    srv._model_name = "test-model"
+    srv._api_key = None
+    srv._default_chat_template_kwargs = None
+    srv._residency_manager = None
+    srv._default_model_key = None
+    srv._responses_store = OrderedDict()
+    srv._RESPONSES_STORE_MAX_SIZE = 1000
+
+    try:
+        yield srv
+    finally:
+        srv._engine = original_engine
+        srv._model_name = original_model_name
+        srv._api_key = original_api_key
+        srv._default_chat_template_kwargs = original_default_chat_template_kwargs
+        srv._residency_manager = original_residency_manager
+        srv._default_model_key = original_default_model_key
+        srv._responses_store = original_responses_store
+        srv._RESPONSES_STORE_MAX_SIZE = original_responses_store_max
+
+
+class TestGroupSampling:
+    """Tests for SamplingParams.n group sampling — AC1-AC8."""
+
+    # ---- AC1-AC5: Pydantic validation (no server import) ----
+
+    def test_chat_n_defaults_to_one(self):
+        req = ChatCompletionRequest(
+            model="test-model",
+            messages=[Message(role="user", content="hi")],
+        )
+        assert req.n == 1
+        assert req.best_of is None
+
+    def test_completion_n_defaults_to_one(self):
+        req = CompletionRequest(model="test-model", prompt="hi")
+        assert req.n == 1
+        assert req.best_of is None
+
+    def test_chat_n_accepts_group_sampling(self):
+        req = ChatCompletionRequest(
+            model="test-model",
+            messages=[Message(role="user", content="hi")],
+            n=4,
+        )
+        assert req.n == 4
+
+    def test_completion_n_accepts_group_sampling(self):
+        req = CompletionRequest(model="test-model", prompt="hi", n=4)
+        assert req.n == 4
+
+    def test_chat_n_zero_rejected(self):
+        with pytest.raises(ValidationError):
+            ChatCompletionRequest(
+                model="test-model",
+                messages=[Message(role="user", content="hi")],
+                n=0,
+            )
+
+    def test_completion_n_zero_rejected(self):
+        with pytest.raises(ValidationError):
+            CompletionRequest(model="test-model", prompt="hi", n=0)
+
+    def test_chat_n_above_64_rejected(self):
+        with pytest.raises(ValidationError):
+            ChatCompletionRequest(
+                model="test-model",
+                messages=[Message(role="user", content="hi")],
+                n=65,
+            )
+
+    def test_completion_n_above_64_rejected(self):
+        with pytest.raises(ValidationError):
+            CompletionRequest(model="test-model", prompt="hi", n=65)
+
+    # ---- AC6: stream + n>1 → HTTP 400 with code=stream_n_unsupported ----
+
+    @_requires_arm_darwin
+    def test_chat_stream_with_n_gt_1_returns_400(
+        self, _gs_client, _gs_server_state
+    ):
+        resp = _gs_client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+                "n": 2,
+            },
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert body["error"]["code"] == "stream_n_unsupported"
+        assert body["error"]["type"] == "invalid_request_error"
+        assert body["error"]["param"] == "stream"
+
+    @_requires_arm_darwin
+    def test_completion_stream_with_n_gt_1_returns_400(
+        self, _gs_client, _gs_server_state
+    ):
+        resp = _gs_client.post(
+            "/v1/completions",
+            json={
+                "model": "test-model",
+                "prompt": "hi",
+                "stream": True,
+                "n": 2,
+            },
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert body["error"]["code"] == "stream_n_unsupported"
+        assert body["error"]["type"] == "invalid_request_error"
+        assert body["error"]["param"] == "stream"
+
+    # ---- AC7: n=4 returns 4 choices with distinct indices 0..3 ----
+
+    @_requires_arm_darwin
+    def test_chat_n_4_returns_4_choices_with_distinct_indices(
+        self, _gs_client, _gs_server_state
+    ):
+        _gs_server_state._engine = _gs_mock_engine(
+            _gs_make_output("rollout-0"),
+            _gs_make_output("rollout-1"),
+            _gs_make_output("rollout-2"),
+            _gs_make_output("rollout-3"),
+        )
+        resp = _gs_client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "hi"}],
+                "n": 4,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert len(body["choices"]) == 4
+        assert [c["index"] for c in body["choices"]] == [0, 1, 2, 3]
+        texts = [c["message"]["content"] for c in body["choices"]]
+        assert texts == ["rollout-0", "rollout-1", "rollout-2", "rollout-3"]
+
+    @_requires_arm_darwin
+    def test_completion_n_4_returns_4_choices_with_distinct_indices(
+        self, _gs_client, _gs_server_state
+    ):
+        _gs_server_state._engine = _gs_mock_engine(
+            _gs_make_output("rollout-0"),
+            _gs_make_output("rollout-1"),
+            _gs_make_output("rollout-2"),
+            _gs_make_output("rollout-3"),
+        )
+        resp = _gs_client.post(
+            "/v1/completions",
+            json={"model": "test-model", "prompt": "hi", "n": 4},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert len(body["choices"]) == 4
+        assert [c["index"] for c in body["choices"]] == [0, 1, 2, 3]
+        texts = [c["text"] for c in body["choices"]]
+        assert texts == ["rollout-0", "rollout-1", "rollout-2", "rollout-3"]
+
+    # ---- AC8: token accounting — prompt counted once, completions summed ----
+
+    @_requires_arm_darwin
+    def test_chat_n_4_token_accounting(self, _gs_client, _gs_server_state):
+        _gs_server_state._engine = _gs_mock_engine(
+            _gs_make_output("a", prompt_tokens=10, completion_tokens=3),
+            _gs_make_output("b", prompt_tokens=10, completion_tokens=3),
+            _gs_make_output("c", prompt_tokens=10, completion_tokens=3),
+            _gs_make_output("d", prompt_tokens=10, completion_tokens=3),
+        )
+        resp = _gs_client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "hi"}],
+                "n": 4,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        usage = resp.json()["usage"]
+        # Prompt tokens counted ONCE (NOT 40), completions summed (3 * 4 = 12).
+        assert usage["prompt_tokens"] == 10
+        assert usage["completion_tokens"] == 12
+        assert usage["total_tokens"] == 22
+
+    @_requires_arm_darwin
+    def test_completion_n_4_token_accounting(
+        self, _gs_client, _gs_server_state
+    ):
+        _gs_server_state._engine = _gs_mock_engine(
+            _gs_make_output("a", prompt_tokens=10, completion_tokens=3),
+            _gs_make_output("b", prompt_tokens=10, completion_tokens=3),
+            _gs_make_output("c", prompt_tokens=10, completion_tokens=3),
+            _gs_make_output("d", prompt_tokens=10, completion_tokens=3),
+        )
+        resp = _gs_client.post(
+            "/v1/completions",
+            json={"model": "test-model", "prompt": "hi", "n": 4},
+        )
+        assert resp.status_code == 200, resp.text
+        usage = resp.json()["usage"]
+        # Prompt tokens counted ONCE per prompt (NOT 40), completions summed.
+        assert usage["prompt_tokens"] == 10
+        assert usage["completion_tokens"] == 12
+        assert usage["total_tokens"] == 22

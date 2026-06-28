@@ -69,6 +69,7 @@ claude
 - **Speculative decoding**: `--mtp` for Qwen3-Next
 - **Sparse prefill**: attention-based `--spec-prefill` for TTFT reduction
 - **RLHF/GRPO weight hot-reload**: 7 trainer-facing HTTP routes (`/init_weight_transfer_engine`, `/update_weights`, `/pause`, `/resume`, etc.) mirror upstream vLLM async-RL surface for colocated training
+- **Group sampling** (`n`): generate up to 64 independent completions per prompt for GRPO/RLHF rollout collection; prefix cache deduplicates the shared prompt-KV automatically
 
 ### Observability
 - **Prometheus metrics**: `/metrics` endpoint with `--metrics`
