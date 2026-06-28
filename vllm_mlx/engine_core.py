@@ -111,6 +111,12 @@ class EngineCore:
         self._start_time: Optional[float] = None
         self._steps_executed = 0
 
+        # Weight-transfer state (lazy: engine instance created on first
+        # init_weight_transfer_engine call). Forward-ref string to avoid
+        # importing the weight_transfer module at engine_core load time.
+        self._weight_transfer_engine: Optional["Any"] = None
+        self._weight_update_in_progress: bool = False
+
         logger.debug(f"Engine {self._engine_id} initialized")
 
     async def start(self) -> None:
@@ -638,6 +644,169 @@ class EngineCore:
         """Clear the prefix cache (delegates to scheduler)."""
         if hasattr(self.scheduler, "clear_prefix_cache"):
             self.scheduler.clear_prefix_cache()
+
+    # ------------------------------------------------------------------
+    # Weight-transfer surface (Plan-1.5 Patch #3)
+    # ------------------------------------------------------------------
+
+    def get_world_size(self) -> int:
+        """MLX runs single-host (Apple Silicon)."""
+        return 1
+
+    def pause(
+        self,
+        mode: str = "wait",
+        clear_cache: bool = True,
+        timeout_s: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Pause scheduling; optionally clear KV/prefix caches afterward."""
+        result = self.scheduler.pause(
+            mode=mode, clear_cache=clear_cache, timeout_s=timeout_s
+        )
+        if result.get("clear_cache_requested"):
+            self.clear_kv_and_prefix_cache()
+        return result
+
+    def resume(self) -> Dict[str, Any]:
+        """Resume scheduling after a pause()."""
+        return self.scheduler.resume()
+
+    def clear_kv_and_prefix_cache(self) -> None:
+        """Invalidate KV (runtime) and prefix caches.
+
+        Delegates to existing scheduler-level hooks; both calls are
+        defensively wrapped so a backend-specific failure (e.g., paged
+        cache absent) doesn't take down the weight-update flow.
+        """
+        try:
+            self.scheduler.clear_runtime_caches()
+        except Exception as e:
+            logger.warning("clear_runtime_caches failed: %s", e)
+        if hasattr(self.scheduler, "clear_prefix_cache"):
+            try:
+                self.scheduler.clear_prefix_cache()
+            except Exception as e:
+                logger.warning("clear_prefix_cache failed: %s", e)
+
+    def init_weight_transfer_engine(self, req: Any) -> Dict[str, Any]:
+        """Create the MLX weight-transfer engine.
+
+        Idempotent — re-init replaces any existing engine instance.
+
+        Args:
+            req: Request object or dict with ``init_info`` (dict of init args).
+
+        Returns:
+            Dict with ``initialized``, ``backend``, ``world_size``.
+        """
+        # Lazy import — keeps mlx out of import chain on non-Apple hosts.
+        from vllm_mlx.weight_transfer import WeightTransferEngineFactory
+
+        backend = "mlx"
+        if hasattr(req, "init_info"):
+            init_dict = req.init_info or {}
+        elif isinstance(req, dict):
+            init_dict = req.get("init_info", {}) or {}
+        else:
+            init_dict = {}
+
+        engine_cls = WeightTransferEngineFactory.get_engine_class(backend)
+        init_info = engine_cls.parse_init_info(init_dict)
+        engine = WeightTransferEngineFactory.create_engine(
+            backend, self.config, None, self.scheduler.model
+        )
+        engine.init_transfer_engine(init_info)
+        self._weight_transfer_engine = engine
+        return {
+            "initialized": True,
+            "backend": backend,
+            "world_size": init_info.world_size,
+        }
+
+    def start_weight_update(
+        self, is_checkpoint_format: bool = True
+    ) -> Dict[str, Any]:
+        """Begin a weight update: pause + clear caches.
+
+        Re-entrancy: if an update is already in progress, this returns
+        ``{"started": False, ...}`` without modifying scheduler state.
+        """
+        if getattr(self, "_weight_update_in_progress", False):
+            return {
+                "started": False,
+                "reason": "update already in progress",
+            }
+        self._weight_update_in_progress = True
+        result = self.pause(mode="wait", clear_cache=True, timeout_s=30.0)
+        result["started"] = True
+        result["is_checkpoint_format"] = is_checkpoint_format
+        return result
+
+    def update_weights(self, req: Any) -> Dict[str, Any]:
+        """Apply one weight update via the registered transfer engine."""
+        engine = getattr(self, "_weight_transfer_engine", None)
+        if engine is None:
+            raise RuntimeError(
+                "Weight transfer engine not initialized; "
+                "call init_weight_transfer_engine first."
+            )
+        # M-3 mitigation: require an active weight-update window so the
+        # scheduler has been paused and caches cleared. Bypassing this
+        # would race model.update() against in-flight forward passes.
+        if not getattr(self, "_weight_update_in_progress", False):
+            raise RuntimeError(
+                "update_weights called without start_weight_update; "
+                "call start_weight_update first to pause the scheduler "
+                "and clear caches"
+            )
+        if hasattr(req, "update_info"):
+            update_dict = req.update_info
+        elif isinstance(req, dict):
+            update_dict = req.get("update_info")
+        else:
+            update_dict = None
+        if update_dict is None:
+            raise ValueError("update_weights: req.update_info is missing")
+
+        update_info = type(engine).parse_update_info(update_dict)
+        engine.receive_weights(update_info, load_weights=self._load_weights)
+        return {"applied": True, "num_params": len(update_info.names)}
+
+    def finish_weight_update(self) -> Dict[str, Any]:
+        """End a weight update: clear in-progress flag and resume scheduling."""
+        self._weight_update_in_progress = False
+        return self.resume()
+
+    def _load_weights(self, params_list: List[tuple]) -> None:
+        """Apply (name, mx.array) pairs to the model and force eval barrier.
+
+        Closure passed into `receive_weights`. This is where the actual
+        in-place update happens: `model.update(dict)` followed by
+        `mx.eval(model.parameters())` to materialize lazy ops.
+        """
+        params_dict = dict(params_list)
+        # L-1 mitigation: audit log every weight application. Surface
+        # parameter count and a sample of names so an operator can see
+        # exactly what the engine accepted from the trainer.
+        sorted_names = sorted(params_dict.keys())
+        sample = sorted_names[:5]
+        if len(sorted_names) > 5:
+            logger.info(
+                "Applying weight update: %d params, names=%s ... (+%d more)",
+                len(params_dict),
+                sample,
+                len(sorted_names) - 5,
+            )
+        else:
+            logger.info(
+                "Applying weight update: %d params, names=%s",
+                len(params_dict),
+                sample,
+            )
+        self.scheduler.model.update(params_dict)
+        # Force the lazy graph to materialize so the next forward pass sees
+        # the new weights deterministically.
+        mx.eval(self.scheduler.model.parameters())
 
     def _release_model(self) -> None:
         """Release model ownership."""

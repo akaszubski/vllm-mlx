@@ -545,6 +545,48 @@ Per-request fields in `requests`:
 | `generated_tokens` | Tokens generated so far |
 | `max_tokens` | Maximum tokens requested |
 
+### Weight Transfer / RLHF Routes
+
+Seven root-level routes (no `/v1` prefix) mirror the upstream vLLM async-RL HTTP surface and enable GRPO/RLHF weight hot-reloading from a colocated trainer. All routes require API key authentication when `--api-key` is set.
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/init_weight_transfer_engine` | POST | Initialize the MLX weight-transfer engine |
+| `/start_weight_update` | POST | Pause scheduling and clear caches before a weight update |
+| `/update_weights` | POST | Apply one weight update via the registered transfer engine |
+| `/finish_weight_update` | POST | Resume scheduling after a weight update completes |
+| `/pause` | POST | Pause the scheduler (`mode`: `abort`, `wait`, or `keep`) |
+| `/resume` | POST | Resume the scheduler after a pause |
+| `/get_world_size` | GET | Return world size (always 1 for single-host MLX) |
+
+**Pause modes** (set via `mode` field in `POST /pause`):
+
+| Mode | Behavior |
+|------|----------|
+| `wait` (default) | Drain in-flight requests up to `timeout_s`, then pause |
+| `abort` | Immediately abort all running requests and pause |
+| `keep` | Pause the scheduler but leave running requests untouched |
+
+Example — start a weight-update cycle:
+
+```bash
+# 1. Pause scheduling and clear caches
+curl -X POST http://localhost:8000/start_weight_update \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"is_checkpoint_format": true}'
+
+# 2. Push updated weights
+curl -X POST http://localhost:8000/update_weights \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"update_info": {"names": ["model.layers.0.self_attn.q_proj.weight"], "dtype_names": ["bfloat16"], "shapes": [[4096, 4096]], "path": "/tmp/weights"}}'
+
+# 3. Resume scheduling
+curl -X POST http://localhost:8000/finish_weight_update \
+  -H "Authorization: Bearer $API_KEY"
+```
+
 ## Tool Calling
 
 Enable OpenAI-compatible tool calling with `--enable-auto-tool-choice`:

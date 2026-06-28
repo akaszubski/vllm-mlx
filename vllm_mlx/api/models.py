@@ -11,9 +11,15 @@ These models define the request and response schemas for:
 
 import time
 import uuid
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, model_serializer
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    Field,
+    model_serializer,
+    model_validator,
+)
 
 # =============================================================================
 # Content Types (for multimodal messages)
@@ -541,3 +547,69 @@ class ChatCompletionChunk(BaseModel):
     model: str
     choices: list[ChatCompletionChunkChoice]
     usage: Usage | None = None  # Included when stream_options.include_usage=true
+
+
+# =============================================================================
+# Weight-transfer / RLHF surface (Plan-1.5 Patch #3)
+# =============================================================================
+
+
+class WeightTransferInitRequest(BaseModel):
+    """Init payload for the weight-transfer engine.
+
+    Permissive — accepts upstream NCCL/UCX fields without breaking single-host
+    MLX deployments. The MLX backend silently ignores unknown init_info keys.
+    """
+
+    model_config = {"extra": "allow"}
+    init_info: dict = Field(default_factory=dict)
+
+
+class StartWeightUpdateRequest(BaseModel):
+    """Optional payload for /start_weight_update."""
+
+    is_checkpoint_format: bool = True
+
+
+class WeightTransferUpdateRequest(BaseModel):
+    """Payload for /update_weights.
+
+    Validation enforces that ``update_info`` carries:
+      - parallel-length ``names``, ``dtype_names``, ``shapes`` lists
+      - exactly one of ``packed`` or ``path`` (never neither, never both).
+    """
+
+    update_info: dict = Field(...)
+
+    @model_validator(mode="after")
+    def _validate_update_info(self) -> "WeightTransferUpdateRequest":
+        info = self.update_info
+        for k in ("names", "dtype_names", "shapes"):
+            if k not in info:
+                raise ValueError(
+                    f"update_info missing required key: {k!r}\n"
+                    f"Expected keys: names, dtype_names, shapes, "
+                    f"and exactly one of (packed, path)."
+                )
+        if not isinstance(info["names"], list):
+            raise ValueError("update_info.names must be a list")
+        if len(info["names"]) != len(info["dtype_names"]) or len(
+            info["names"]
+        ) != len(info["shapes"]):
+            raise ValueError(
+                "update_info.names, dtype_names, shapes must be equal length"
+            )
+        has_packed = info.get("packed") is not None
+        has_path = info.get("path") is not None
+        if has_packed == has_path:
+            raise ValueError(
+                "update_info must set exactly one of 'packed' or 'path'"
+            )
+        return self
+
+
+class PauseRequest(BaseModel):
+    """Payload for /pause."""
+
+    mode: Literal["abort", "wait", "keep"] = "wait"
+    clear_cache: bool = True

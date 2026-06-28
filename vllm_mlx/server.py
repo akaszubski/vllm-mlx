@@ -104,6 +104,10 @@ from .api.models import (
     ToolCall,
     Usage,  # noqa: F401
     VideoUrl,  # noqa: F401
+    WeightTransferInitRequest,
+    StartWeightUpdateRequest,
+    WeightTransferUpdateRequest,
+    PauseRequest,
 )
 from .api.responses_models import (
     ResponseCompletedEvent,
@@ -2977,6 +2981,75 @@ async def clear_prefix_cache():
 
     status = "cleared" if cleared else "not_supported"
     return {"status": status, "rewarm_scheduled": rewarm_scheduled}
+
+
+# =============================================================================
+# Weight-transfer / RLHF surface (Plan-1.5 Patch #3)
+# Root-level routes (no /v1 prefix) to mirror upstream vLLM async-RL surface.
+# =============================================================================
+
+
+@app.post(
+    "/init_weight_transfer_engine", dependencies=[Depends(verify_api_key)]
+)
+async def init_weight_transfer_engine(
+    req: WeightTransferInitRequest,
+) -> dict:
+    """Initialize the MLX weight-transfer engine."""
+    if _engine is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+    return _engine.init_weight_transfer_engine(req)
+
+
+@app.post("/start_weight_update", dependencies=[Depends(verify_api_key)])
+async def start_weight_update(
+    req: StartWeightUpdateRequest | None = None,
+) -> dict:
+    """Pause scheduling and clear caches in preparation for a weight update."""
+    if _engine is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+    is_ckpt = req.is_checkpoint_format if req is not None else True
+    return _engine.start_weight_update(is_ckpt)
+
+
+@app.post("/update_weights", dependencies=[Depends(verify_api_key)])
+async def update_weights(req: WeightTransferUpdateRequest) -> dict:
+    """Apply one weight update via the registered transfer engine."""
+    if _engine is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+    return _engine.update_weights(req)
+
+
+@app.post("/finish_weight_update", dependencies=[Depends(verify_api_key)])
+async def finish_weight_update() -> dict:
+    """Resume scheduling after a weight update."""
+    if _engine is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+    return _engine.finish_weight_update()
+
+
+@app.post("/pause", dependencies=[Depends(verify_api_key)])
+async def pause_scheduler(req: PauseRequest) -> dict:
+    """Pause scheduling (modes: wait, abort, keep)."""
+    if _engine is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+    return _engine.pause(mode=req.mode, clear_cache=req.clear_cache)
+
+
+@app.post("/resume", dependencies=[Depends(verify_api_key)])
+async def resume_scheduler() -> dict:
+    """Resume scheduling after a pause."""
+    if _engine is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+    return _engine.resume()
+
+
+@app.get("/get_world_size", dependencies=[Depends(verify_api_key)])
+async def get_world_size() -> dict:
+    """Return scheduler world size (always 1 for MLX, Apple-Silicon single-host)."""
+    if _engine is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+    return {"world_size": _engine.get_world_size()}
 
 
 @app.get("/v1/models", dependencies=[Depends(verify_api_key)])
