@@ -4313,6 +4313,13 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                             logger.warning(f"JSON validation failed: {error}")
 
                 finish_reason = "tool_calls" if tool_calls else output.finish_reason
+                # Per-token logprobs (Plan-1.5 patch #2 composed with patch #1
+                # n-group sampling). Each rollout carries its own cumulative
+                # ``output.logprobs``; surface it on the matching Choice so
+                # callers asking for ``n>1`` + ``logprobs=true`` get one
+                # populated ``choices[i].logprobs`` per rollout. Falls back to
+                # ``None`` automatically when the request didn't opt in.
+                choice_logprobs = _build_choice_logprobs(output.logprobs)
                 choices.append(
                     ChatCompletionChoice(
                         index=i,
@@ -4326,6 +4333,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                             tool_calls=tool_calls,
                         ),
                         finish_reason=finish_reason,
+                        logprobs=choice_logprobs,
                     )
                 )
 

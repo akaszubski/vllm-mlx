@@ -139,6 +139,26 @@ class RequestOutputCollector:
         merged_new_token_ids = existing.new_token_ids + new.new_token_ids
         merged_new_text = existing.new_text + new.new_text
 
+        # Per-token logprobs (Plan-1.5 patch #2). ``new_logprobs`` is a
+        # per-step delta (typically length 1) and MUST be concatenated so
+        # the streaming consumer never loses tokens that were emitted while
+        # the buffer was unread. ``logprobs`` is the cumulative array on
+        # the producer side -- prefer ``new.logprobs`` since it already
+        # includes every entry up through this step; fall back to
+        # ``existing.logprobs`` if the new output didn't carry the
+        # cumulative view (defensive).
+        if existing.new_logprobs is None and new.new_logprobs is None:
+            merged_new_logprobs = None
+        else:
+            merged_new_logprobs = list(existing.new_logprobs or []) + list(
+                new.new_logprobs or []
+            )
+
+        if new.logprobs is not None:
+            merged_logprobs = new.logprobs
+        else:
+            merged_logprobs = existing.logprobs
+
         return RequestOutput(
             request_id=new.request_id,
             new_token_ids=merged_new_token_ids,
@@ -149,6 +169,8 @@ class RequestOutputCollector:
             finish_reason=new.finish_reason,
             prompt_tokens=new.prompt_tokens,
             completion_tokens=new.completion_tokens,
+            new_logprobs=merged_new_logprobs,
+            logprobs=merged_logprobs,
         )
 
     def clear(self) -> None:

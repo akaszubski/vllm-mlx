@@ -23,6 +23,7 @@ from vllm_mlx.api.models import (
     ChoiceLogprobs,
 )
 from vllm_mlx.engine.base import GenerationOutput
+from vllm_mlx.output_collector import RequestOutputCollector
 from vllm_mlx.request import RequestOutput, SamplingParams
 from vllm_mlx.scheduler import _extract_logprob_entry
 from vllm_mlx.server import _build_choice_logprobs
@@ -257,3 +258,84 @@ def test_end_to_end_shape_matches_completion_tokens():
     # Reconstructed text aligns with token decoding
     reconstructed = "".join(e.token for e in wrap.content)
     assert reconstructed == "hi world"
+
+
+# ---------------------------------------------------------------------------
+# Regression: RequestOutputCollector merge must preserve per-token logprobs.
+#
+# Before the wire-level fix, ``_merge_outputs`` only copied tokens/text and
+# dropped ``logprobs``/``new_logprobs``. On the unary chat path the engine
+# loop produces one ``RequestOutput`` per token; consumers drain via
+# ``await event.wait()`` and the collector aggregates the puts that landed
+# before the wait returned. With merge silently stripping logprobs, the
+# final drained output's ``logprobs`` field was None even though the
+# scheduler had populated it on every step. The smoke test
+# ``test_logprobs_populates_content_array`` caught it; these unit tests
+# pin the merge contract so the regression cannot creep back.
+# ---------------------------------------------------------------------------
+
+
+def _lp_entry(token: str) -> dict:
+    return {"token": token, "logprob": -0.5, "bytes": list(token.encode()), "top_logprobs": []}
+
+
+def test_collector_merge_preserves_cumulative_logprobs():
+    """Final ``logprobs`` after merge must equal the latest cumulative array."""
+    collector = RequestOutputCollector(aggregate=True)
+
+    first = RequestOutput(
+        request_id="r1",
+        new_token_ids=[1],
+        new_text="a",
+        output_token_ids=[1],
+        output_text="a",
+        new_logprobs=[_lp_entry("a")],
+        logprobs=[_lp_entry("a")],
+    )
+    second = RequestOutput(
+        request_id="r1",
+        new_token_ids=[2],
+        new_text="b",
+        output_token_ids=[1, 2],
+        output_text="ab",
+        finished=True,
+        finish_reason="stop",
+        new_logprobs=[_lp_entry("b")],
+        logprobs=[_lp_entry("a"), _lp_entry("b")],
+    )
+
+    collector.put(first)
+    collector.put(second)  # triggers _merge_outputs
+
+    merged = collector.get_nowait()
+    assert merged is not None
+    # Cumulative logprobs survive the merge
+    assert merged.logprobs is not None
+    assert [e["token"] for e in merged.logprobs] == ["a", "b"]
+    # Per-step deltas concatenated
+    assert merged.new_logprobs is not None
+    assert [e["token"] for e in merged.new_logprobs] == ["a", "b"]
+    # Tokens and finished flag still propagate
+    assert merged.new_token_ids == [1, 2]
+    assert merged.new_text == "ab"
+    assert merged.finished is True
+
+
+def test_collector_merge_leaves_logprobs_none_when_disabled():
+    """Requests that did not opt in still see ``logprobs is None`` after merge."""
+    collector = RequestOutputCollector(aggregate=True)
+
+    first = RequestOutput(request_id="r1", new_token_ids=[1], new_text="a", output_text="a")
+    second = RequestOutput(
+        request_id="r1",
+        new_token_ids=[2],
+        new_text="b",
+        output_text="ab",
+        finished=True,
+    )
+    collector.put(first)
+    collector.put(second)
+    merged = collector.get_nowait()
+    assert merged is not None
+    assert merged.logprobs is None
+    assert merged.new_logprobs is None

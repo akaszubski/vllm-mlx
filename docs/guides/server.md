@@ -864,3 +864,29 @@ vllm-mlx serve mlx-community/Qwen3-0.6B-8bit \
   --timeout 120 \
   --port 8000
 ```
+
+## Live HTTP smoke
+
+The repo ships an opt-in HTTP smoke test that boots a real
+`python -m vllm_mlx.server` subprocess on an ephemeral port and exercises
+`/v1/chat/completions` end-to-end. It validates the wire format for the
+two RLHF-facing features — group sampling (`n`) and per-token logprobs
+(`logprobs`, `top_logprobs`) — against a running server, complementing
+the in-memory unit coverage in `tests/test_logprobs_surface.py`.
+
+The smoke is gated behind the `live_server` pytest marker so a default
+`pytest` run does not boot a server. To run it explicitly:
+
+```bash
+pytest -m live_server tests/test_logprobs_n_live_smoke.py -v
+```
+
+Requirements:
+
+- `mlx-community/Llama-3.2-3B-Instruct-4bit` cached locally (the test skips
+  if the snapshot directory is absent).
+- A free TCP port on `127.0.0.1` (the test selects one automatically).
+
+The server is reaped on every exit path (pass, fail, KeyboardInterrupt) via
+`SIGTERM` -> 10s grace -> `SIGKILL`, so the test will not leave an orphan
+listener behind.
