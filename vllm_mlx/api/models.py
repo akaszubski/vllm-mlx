@@ -202,6 +202,24 @@ class ChatCompletionRequest(BaseModel):
     # best_of: validated for OpenAI/vLLM API parity; selection logic not
     # yet implemented in the MLX engine (tracked separately).
     best_of: int | None = Field(default=None, ge=1, le=64)
+    # Per-token logprobs in the response (OpenAI Chat Completions spec).
+    # When True, each ChatCompletionChoice gains a populated `logprobs.content`
+    # array with one entry per generated token. Required for RLHF/GRPO
+    # importance-sampling ratios so the trainer can score rollouts without
+    # a second forward pass (Plan-1.5 patch #2 / realign#1251).
+    logprobs: bool | None = None
+    # When set together with logprobs=True, include the top-N alternative
+    # token logprobs per step. OpenAI caps this at 20.
+    top_logprobs: int | None = None
+
+    @model_validator(mode="after")
+    def _validate_top_logprobs(self) -> "ChatCompletionRequest":
+        """top_logprobs requires logprobs=True and must be <= 20 (OpenAI spec)."""
+        if self.top_logprobs is not None and self.top_logprobs > 0 and not self.logprobs:
+            raise ValueError("`top_logprobs` requires `logprobs=true`")
+        if self.top_logprobs is not None and self.top_logprobs > 20:
+            raise ValueError("`top_logprobs` must be <= 20 (OpenAI spec)")
+        return self
 
 
 class AssistantMessage(BaseModel):
@@ -234,12 +252,38 @@ class AssistantMessage(BaseModel):
         return d
 
 
+class ChatCompletionTokenLogprob(BaseModel):
+    """A single token's logprob entry (OpenAI Chat Completions spec).
+
+    Mirrors OpenAI's ``ChoiceLogprobsToken``:
+    https://platform.openai.com/docs/api-reference/chat/object
+    """
+
+    token: str
+    logprob: float
+    # UTF-8 byte sequence for the token; None when the token decodes to a
+    # valid UTF-8 string standalone (matches OpenAI's behavior of populating
+    # bytes only when the token alone isn't a valid Python str).
+    bytes: list[int] | None = None
+    # Top-N alternative tokens at this position. Empty when not requested.
+    top_logprobs: list["ChatCompletionTokenLogprob"] = Field(default_factory=list)
+
+
+class ChoiceLogprobs(BaseModel):
+    """Wrapper around per-token logprobs for a choice (OpenAI spec)."""
+
+    content: list[ChatCompletionTokenLogprob] | None = None
+
+
 class ChatCompletionChoice(BaseModel):
     """A single choice in chat completion response."""
 
     index: int = 0
     message: AssistantMessage
     finish_reason: str | None = "stop"
+    # Populated when the request set ``logprobs=true``. Per OpenAI spec,
+    # this is the wrapper object (``{"content": [...]}``), not the array.
+    logprobs: ChoiceLogprobs | None = None
 
 
 class Usage(BaseModel):
@@ -551,6 +595,9 @@ class ChatCompletionChunkChoice(BaseModel):
     index: int = 0
     delta: ChatCompletionChunkDelta
     finish_reason: str | None = None
+    # Per-token logprobs for the tokens emitted in this chunk. Populated
+    # only when the request set ``logprobs=true`` and streaming is enabled.
+    logprobs: ChoiceLogprobs | None = None
 
 
 class ChatCompletionChunk(BaseModel):

@@ -44,6 +44,57 @@ CACHE_CORRUPTION_PATTERNS = [
 ]
 
 
+def _extract_logprob_entry(
+    token_id: int,
+    logprobs_dist: Any,
+    tokenizer: Any,
+    top_logprobs: int = 0,
+) -> Dict[str, Any]:
+    """Build an OpenAI-format per-token logprob entry from MLX vocab logprobs.
+
+    ``logprobs_dist`` is already log-softmaxed (see ``scheduler.py`` near the
+    ``logits - mx.logsumexp(...)`` line), so we just index the chosen token
+    and (optionally) extract the top-N alternatives.
+
+    Args:
+        token_id: The chosen token id.
+        logprobs_dist: mx.array of shape [vocab_size].
+        tokenizer: Tokenizer exposing ``decode(list[int]) -> str``.
+        top_logprobs: If > 0, include the top-N alternative tokens (sorted
+            by logprob descending, including the chosen token).
+
+    Returns:
+        Dict with keys ``token``, ``logprob``, ``bytes``, ``top_logprobs``.
+    """
+    chosen_logprob = float(logprobs_dist[token_id].item())
+    token_text = tokenizer.decode([token_id])
+    entry: Dict[str, Any] = {
+        "token": token_text,
+        "logprob": chosen_logprob,
+        "bytes": list(token_text.encode("utf-8")),
+        "top_logprobs": [],
+    }
+    if top_logprobs > 0:
+        # mlx has no built-in topk; argsort over the negated array is
+        # equivalent for small k (typical <= 20).
+        vocab_size = int(logprobs_dist.shape[0])
+        k = min(top_logprobs, vocab_size)
+        top_idx = mx.argsort(-logprobs_dist)[:k]
+        top_idx_list = top_idx.tolist()
+        top_lp_list = logprobs_dist[top_idx].tolist()
+        for tid, lp in zip(top_idx_list, top_lp_list):
+            tid_int = int(tid)
+            tok_text = tokenizer.decode([tid_int])
+            entry["top_logprobs"].append(
+                {
+                    "token": tok_text,
+                    "logprob": float(lp),
+                    "bytes": list(tok_text.encode("utf-8")),
+                }
+            )
+    return entry
+
+
 class SchedulingPolicy(Enum):
     """Scheduling policy for request ordering."""
 
@@ -2228,6 +2279,33 @@ class Scheduler:
                 detok.add_token(response.token)
                 new_text = detok.last_segment
 
+            # Per-token logprobs (Plan-1.5 patch #2 / realign#1251). Extract
+            # the chosen-token logprob (and top-N alternatives, if requested)
+            # from the already-evaluated vocab distribution. No second forward
+            # pass; cost is one scalar read (+ argsort over vocab when
+            # top_logprobs > 0). Only runs when the request opted in via
+            # sampling_params.logprobs.
+            new_logprobs: Optional[List[Dict[str, Any]]] = None
+            if (
+                request.sampling_params.logprobs
+                and getattr(response, "logprobs", None) is not None
+            ):
+                try:
+                    entry = _extract_logprob_entry(
+                        response.token,
+                        response.logprobs,
+                        self._actual_tokenizer,
+                        top_logprobs=request.sampling_params.top_logprobs,
+                    )
+                    request.logprob_entries.append(entry)
+                    new_logprobs = [entry]
+                except Exception:
+                    logger.warning(
+                        "logprob extraction failed for request %s",
+                        request_id,
+                        exc_info=True,
+                    )
+
             # Create output
             output = RequestOutput(
                 request_id=request_id,
@@ -2236,6 +2314,12 @@ class Scheduler:
                 output_token_ids=list(request.output_token_ids),
                 prompt_tokens=request.num_prompt_tokens,
                 completion_tokens=request.num_output_tokens,
+                new_logprobs=new_logprobs,
+                logprobs=(
+                    list(request.logprob_entries)
+                    if request.sampling_params.logprobs
+                    else None
+                ),
             )
 
             # Check if finished
