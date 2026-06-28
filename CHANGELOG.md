@@ -40,6 +40,35 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   `StartWeightUpdateRequest`, `WeightTransferUpdateRequest`, `PauseRequest`
   in `vllm_mlx/api/models.py`. (realign#1309)
 
+### Fixed
+
+- `RequestOutputCollector._merge_outputs` was silently dropping `logprobs` and
+  `new_logprobs` fields when the producer got ahead of the consumer (aggregate
+  mode). The cumulative `logprobs` array and per-step `new_logprobs` delta are
+  now propagated correctly through the merge, so logprobs are never lost on the
+  streaming buffer even when multiple tokens are coalesced before the consumer
+  drains. Exposed by the live HTTP smoke; pinned by two new unit regression
+  tests in `tests/test_logprobs_surface.py`.
+- `create_chat_completion` `n>1` branch was not threading `choice_logprobs`
+  onto each `ChatCompletionChoice`. Callers requesting `n>1` with
+  `logprobs=true` would receive `choices[*].logprobs: null` despite the engine
+  having populated logprobs on every rollout. Each rollout's cumulative
+  `output.logprobs` is now forwarded to its matching `ChatCompletionChoice`.
+
+### Tests
+
+- Live-HTTP smoke for Plan-1.5 patches #1 + #2 at
+  `tests/test_logprobs_n_live_smoke.py`. Boots a real
+  `python -m vllm_mlx.server` subprocess on an ephemeral port, waits for
+  `/health` to report `model_loaded: True`, and exercises four
+  `/v1/chat/completions` paths end-to-end: (A) `logprobs=true` populates
+  `choices[0].logprobs.content` with one entry per completion token,
+  (B) `n=4` yields four choices indexed `{0,1,2,3}`, (C) `n=4` + `logprobs=true`
+  composes correctly across all choices, (D) `top_logprobs=5` yields five
+  per-slot alternatives sorted by `logprob` non-increasing. Gated by a new
+  `live_server` pytest marker so it is opt-in; default `pytest` runs do not
+  collect it. Run with `pytest -m live_server tests/test_logprobs_n_live_smoke.py`.
+
 ### Notes
 
 - **Wired engines** (logprobs): `BatchedEngine` (continuous batching — the path
@@ -52,3 +81,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Trainer-level end-to-end (`realign train --reload-every 1`) and LoRA +
   grad-step deadlock validation are tracked separately (realign#1309 follow-up);
   out of scope for these patches.
+- **realign-side bug uncovered while wiring the smoke**:
+  `realign/.../vllm_mlx_rollout.py:235` passes `max_tokens=` to
+  `vllm_mlx.Request(...)`, but `max_tokens` lives on `SamplingParams`. This
+  caused the realign GRPO smoke to silently fall back to
+  `mlx_lm.batch_generate`. Fix belongs in realign, tracked under realign#1308.
