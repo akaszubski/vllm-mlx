@@ -30,6 +30,14 @@ class GenerationOutput:
     # For streaming
     new_text: str = ""
     finished: bool = True
+    # Per-token logprobs in OpenAI Chat Completions format (Plan-1.5 patch #2
+    # / realign#1251). Each entry has keys ``token``, ``logprob``, ``bytes``,
+    # ``top_logprobs``. None when the request did not opt in to logprobs.
+    # For streaming, ``logprobs`` is the cumulative array up to and including
+    # the current chunk; ``new_logprobs`` covers only the tokens emitted by
+    # the current chunk (typically length 1).
+    logprobs: list[dict] | None = None
+    new_logprobs: list[dict] | None = None
 
 
 @contextmanager

@@ -78,6 +78,8 @@ from .api.models import (
     ChatCompletionChunkDelta,  # noqa: F401
     ChatCompletionRequest,
     ChatCompletionResponse,
+    ChatCompletionTokenLogprob,
+    ChoiceLogprobs,
     CompletionChoice,  # noqa: F401
     CompletionRequest,
     CompletionResponse,
@@ -434,6 +436,43 @@ def _prepare_json_logits_processor(
     return messages, json_logits_processor
 
 
+def _build_choice_logprobs(
+    raw_logprobs: list[dict] | None,
+) -> ChoiceLogprobs | None:
+    """Convert engine-format per-token logprobs into the OpenAI Pydantic shape.
+
+    The engine emits each entry as a plain dict::
+
+        {"token": str, "logprob": float, "bytes": list[int],
+         "top_logprobs": list[{token, logprob, bytes}]}
+
+    OpenAI's Chat Completions schema wraps the array in ``{"content": [...]}``
+    (see ``ChoiceLogprobs``). Returns ``None`` when the request did not opt in
+    or the engine produced no entries, so the field is omitted on the wire.
+    """
+    if not raw_logprobs:
+        return None
+    content = []
+    for entry in raw_logprobs:
+        top = [
+            ChatCompletionTokenLogprob(
+                token=alt.get("token", ""),
+                logprob=float(alt.get("logprob", 0.0)),
+                bytes=alt.get("bytes"),
+            )
+            for alt in entry.get("top_logprobs", [])
+        ]
+        content.append(
+            ChatCompletionTokenLogprob(
+                token=entry.get("token", ""),
+                logprob=float(entry.get("logprob", 0.0)),
+                bytes=entry.get("bytes"),
+                top_logprobs=top,
+            )
+        )
+    return ChoiceLogprobs(content=content)
+
+
 def _prepare_chat_completion_invocation(
     engine: BaseEngine,
     request: ChatCompletionRequest,
@@ -490,6 +529,14 @@ def _prepare_chat_completion_invocation(
 
     if request.enable_thinking is not None:
         chat_kwargs["enable_thinking"] = request.enable_thinking
+
+    # Per-token logprobs (Plan-1.5 patch #2 / realign#1251). Only forward
+    # when the request opts in; SamplingParams defaults to logprobs=False so
+    # the extraction path stays off the hot path for normal traffic.
+    if request.logprobs:
+        chat_kwargs["logprobs"] = True
+        if request.top_logprobs is not None and request.top_logprobs > 0:
+            chat_kwargs["top_logprobs"] = int(request.top_logprobs)
 
     if request.tools and request.tool_choice != "none":
         template_tools = convert_tools_for_template(request.tools)
@@ -4354,6 +4401,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             prompt_tokens=output.prompt_tokens,
             completion_tokens=output.completion_tokens,
         )
+        choice_logprobs = _build_choice_logprobs(output.logprobs)
         return ChatCompletionResponse(
             model=_model_name,
             choices=[
@@ -4366,6 +4414,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                         tool_calls=tool_calls,
                     ),
                     finish_reason=finish_reason,
+                    logprobs=choice_logprobs,
                 )
             ],
             usage=Usage(

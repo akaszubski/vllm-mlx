@@ -701,6 +701,8 @@ class BatchedEngine(BaseEngine):
             repetition_penalty=kwargs.pop("repetition_penalty", 1.0),
             stop=stop or [],
             logits_processors=kwargs.pop("logits_processors", None),
+            logprobs=bool(kwargs.pop("logprobs", False)),
+            top_logprobs=int(kwargs.pop("top_logprobs", 0) or 0),
         )
 
         output = await self._engine.generate(
@@ -716,6 +718,7 @@ class BatchedEngine(BaseEngine):
             prompt_tokens=output.prompt_tokens,
             completion_tokens=output.completion_tokens,
             finish_reason=output.finish_reason,
+            logprobs=output.logprobs,
         )
 
     async def stream_generate(
@@ -788,6 +791,8 @@ class BatchedEngine(BaseEngine):
             repetition_penalty=kwargs.pop("repetition_penalty", 1.0),
             stop=stop or [],
             logits_processors=kwargs.pop("logits_processors", None),
+            logprobs=bool(kwargs.pop("logprobs", False)),
+            top_logprobs=int(kwargs.pop("top_logprobs", 0) or 0),
         )
 
         prefix_boundary = kwargs.pop("prefix_boundary", 0)
@@ -807,6 +812,8 @@ class BatchedEngine(BaseEngine):
                 completion_tokens=output.completion_tokens,
                 finished=output.finished,
                 finish_reason=output.finish_reason,
+                logprobs=output.logprobs,
+                new_logprobs=output.new_logprobs,
             )
 
     async def chat(

@@ -65,6 +65,13 @@ class SamplingParams:
     # decoding via ``lm-format-enforcer``).  These are merged with any
     # built-in processors (repetition/presence penalty) at batch time.
     logits_processors: Optional[List[Callable]] = None
+    # Per-token logprobs (Plan-1.5 patch #2 / realign#1251).
+    # When True, the scheduler extracts the chosen-token logprob (and the
+    # top ``top_logprobs`` alternatives, if > 0) from the already-computed
+    # vocab distribution and surfaces them on RequestOutput.logprobs. No
+    # second forward pass is required.
+    logprobs: bool = False
+    top_logprobs: int = 0
 
     def __post_init__(self):
         if self.stop is None:
@@ -108,6 +115,12 @@ class Request:
     num_computed_tokens: int = 0
     output_token_ids: List[int] = field(default_factory=list)
     output_text: str = ""
+    # Per-token logprob entries accumulated during generation. Only populated
+    # when ``sampling_params.logprobs`` is True. Each entry follows the
+    # OpenAI Chat Completions logprob shape:
+    #   {token: str, logprob: float, bytes: list[int] | None,
+    #    top_logprobs: list[{token, logprob, bytes}]}
+    logprob_entries: List[Dict[str, Any]] = field(default_factory=list)
 
     # For BatchGenerator integration
     batch_uid: Optional[int] = None  # UID assigned by BatchGenerator
@@ -213,6 +226,12 @@ class RequestOutput:
     # Timing
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # Per-token logprob entries in OpenAI Chat Completions format.
+    # ``new_logprobs`` covers the tokens emitted in this step (typically
+    # length 1 for non-speculative decoding); ``logprobs`` is the cumulative
+    # array. None when the request did not enable logprobs.
+    new_logprobs: Optional[List[Dict[str, Any]]] = None
+    logprobs: Optional[List[Dict[str, Any]]] = None
 
     @property
     def usage(self) -> Dict[str, int]:
