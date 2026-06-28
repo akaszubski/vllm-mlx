@@ -68,6 +68,7 @@ claude
 - **MoE expert reduction**: `--moe-top-k` for +7-16% on Qwen3-30B-A3B
 - **Speculative decoding**: `--mtp` for Qwen3-Next
 - **Sparse prefill**: attention-based `--spec-prefill` for TTFT reduction
+- **RLHF/GRPO weight hot-reload**: 7 trainer-facing HTTP routes (`/init_weight_transfer_engine`, `/update_weights`, `/pause`, `/resume`, etc.) mirror upstream vLLM async-RL surface for colocated training
 
 ### Observability
 - **Prometheus metrics**: `/metrics` endpoint with `--metrics`

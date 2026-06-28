@@ -12,6 +12,8 @@ The scheduler follows vLLM's design with:
 """
 
 import logging
+import threading
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
@@ -1152,6 +1154,12 @@ class Scheduler:
         self.request_id_to_uid: Dict[str, int] = {}
         self.uid_to_request_id: Dict[int, str] = {}
 
+        # Pause/resume state — used by weight-transfer flow to freeze
+        # scheduling while weights are hot-swapped. See pause()/resume() below.
+        self._paused: bool = False
+        self._pause_mode: Optional[str] = None
+        self._pause_lock = threading.Lock()
+
         # BatchGenerator - the actual batching engine
         self.batch_generator: Optional[BatchGenerator] = None
         self._current_sampler_params: Optional[Tuple] = None
@@ -1854,6 +1862,96 @@ class Scheduler:
             f"Added request {request.request_id} with {request.num_prompt_tokens} prompt tokens"
         )
 
+    # ------------------------------------------------------------------
+    # Pause / resume (used by weight-transfer flow)
+    # ------------------------------------------------------------------
+
+    def pause(
+        self,
+        mode: str = "wait",
+        clear_cache: bool = True,
+        timeout_s: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Pause request scheduling.
+
+        Args:
+            mode: One of:
+                - ``"wait"``: drain in-flight requests up to ``timeout_s``,
+                  then pause.
+                - ``"abort"``: mark all running requests FINISHED_ABORTED,
+                  clear running, then pause.
+                - ``"keep"``: freeze without modifying the running queue;
+                  ``resume()`` resumes from where we left off.
+            clear_cache: Whether the caller intends to clear KV/prefix caches
+                after pause. Reported back in the result so the engine can act.
+            timeout_s: Max seconds to wait for ``running`` to drain in
+                ``"wait"`` mode.
+
+        Returns:
+            Dict with keys ``paused``, ``mode``, ``drained``,
+            ``clear_cache_requested``, ``running_count``.
+
+        Raises:
+            ValueError: If ``mode`` is not one of the supported values.
+        """
+        if mode not in ("wait", "abort", "keep"):
+            raise ValueError(
+                f"unknown pause mode: {mode!r}\n"
+                f"Expected one of: 'wait', 'abort', 'keep'\n"
+                f"See: docs/guides/server.md#weight-transfer--rlhf-routes"
+            )
+        with self._pause_lock:
+            drained = True
+            if mode == "wait":
+                drained = self._drain_inflight(timeout_s)
+                if not drained:
+                    logger.warning(
+                        "Scheduler.pause(wait) timeout after %.1fs; "
+                        "%d still running",
+                        timeout_s,
+                        len(self.running),
+                    )
+            elif mode == "abort":
+                for req_id, req in list(self.running.items()):
+                    req.status = RequestStatus.FINISHED_ABORTED
+                    if hasattr(req, "finish_reason"):
+                        req.finish_reason = "aborted_for_weight_update"
+                    self.finished_req_ids.add(req_id)
+                self.running.clear()
+            # mode == "keep": leave running untouched.
+            self._paused = True
+            self._pause_mode = mode
+            return {
+                "paused": True,
+                "mode": mode,
+                "drained": drained,
+                "clear_cache_requested": clear_cache,
+                "running_count": len(self.running),
+            }
+
+    def resume(self) -> Dict[str, Any]:
+        """Resume request scheduling after a pause."""
+        with self._pause_lock:
+            was = self._pause_mode
+            self._paused = False
+            self._pause_mode = None
+            return {"resumed": True, "previous_mode": was}
+
+    def _drain_inflight(self, timeout_s: float) -> bool:
+        """Block until ``len(self.running) == 0`` or timeout.
+
+        Returns:
+            True if drained within ``timeout_s``, False if timed out.
+        """
+        if not self.running:
+            return True
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if not self.running:
+                return True
+            time.sleep(0.01)
+        return not self.running
+
     def abort_request(self, request_id: str) -> bool:
         """
         Queue request for abort. Thread-safe, called from any thread.
@@ -2448,6 +2546,13 @@ class Scheduler:
         Returns:
             SchedulerOutput with results of this step
         """
+        # Short-circuit when paused — engine_core loop is expected to keep
+        # ticking while pause() is in effect (e.g., during weight updates).
+        # Return an empty SchedulerOutput so callers see "no work" without
+        # touching the BatchGenerator or running set.
+        if self._paused:
+            return SchedulerOutput()
+
         output = SchedulerOutput()
 
         # Process pending aborts FIRST (in executor thread, safe for MLX)
