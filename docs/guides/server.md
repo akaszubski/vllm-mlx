@@ -98,6 +98,26 @@ for chunk in stream:
         print(chunk.choices[0].delta.content, end="")
 ```
 
+#### Group sampling (`n`)
+
+Request multiple independent completions for the same prompt in a single API call. Useful for GRPO/RLHF rollout collection against a single colocated MLX server.
+
+```python
+# Generate 4 independent completions for the same prompt
+response = client.chat.completions.create(
+    model="default",
+    messages=[{"role": "user", "content": "Write a haiku about the ocean."}],
+    n=4,
+    max_tokens=60,
+)
+for i, choice in enumerate(response.choices):
+    print(f"[{i}] {choice.message.content}")
+```
+
+`n` accepts integers from 1 to 64 (default: 1). The prompt-KV is computed once and shared across all rollouts via prefix cache. Token usage follows OpenAI semantics: `prompt_tokens` is counted once; `completion_tokens` is the sum across all `n` choices.
+
+**Constraint**: `n > 1` with `stream=True` returns HTTP 400 (`stream_n_unsupported`). Use non-streaming requests when `n > 1`.
+
 ### Completions
 
 ```bash
@@ -110,6 +130,16 @@ response = client.completions.create(
     prompt="The capital of France is",
     max_tokens=50
 )
+
+# Group sampling: generate n independent completions per prompt
+response = client.completions.create(
+    model="default",
+    prompt="The capital of France is",
+    n=4,
+    max_tokens=50,
+)
+for choice in response.choices:
+    print(choice.text)
 ```
 
 ### Models

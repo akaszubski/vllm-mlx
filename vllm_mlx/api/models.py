@@ -195,6 +195,13 @@ class ChatCompletionRequest(BaseModel):
     specprefill_keep_pct: float | None = None
     # Enable/disable thinking mode (None = server default, typically True)
     enable_thinking: bool | None = None
+    # Group sampling: number of completions to generate per prompt (1..64).
+    # n=1 preserves existing behaviour bit-identically; n>1 fans out N parallel
+    # rollouts (used for GRPO/RLHF). Streaming with n>1 is rejected with HTTP 400.
+    n: int = Field(default=1, ge=1, le=64)
+    # best_of: validated for OpenAI/vLLM API parity; selection logic not
+    # yet implemented in the MLX engine (tracked separately).
+    best_of: int | None = Field(default=None, ge=1, le=64)
 
 
 class AssistantMessage(BaseModel):
@@ -281,6 +288,14 @@ class CompletionRequest(BaseModel):
     specprefill: bool | None = None
     # SpecPrefill: per-request keep percentage (0.0-1.0, None = use server default)
     specprefill_keep_pct: float | None = None
+    # Group sampling: number of completions to generate per prompt (1..64).
+    # n=1 preserves existing behaviour bit-identically; n>1 fans out N parallel
+    # rollouts per prompt (used for GRPO/RLHF). Streaming with n>1 is rejected
+    # with HTTP 400.
+    n: int = Field(default=1, ge=1, le=64)
+    # best_of: validated for OpenAI/vLLM API parity; selection logic not
+    # yet implemented in the MLX engine (tracked separately).
+    best_of: int | None = Field(default=None, ge=1, le=64)
 
 
 class CompletionChoice(BaseModel):
