@@ -1110,3 +1110,62 @@ class BatchedEngine(BaseEngine):
                 return
         if self._engine and hasattr(self._engine, "clear_prefix_cache"):
             self._engine.clear_prefix_cache()
+
+    # ------------------------------------------------------------------
+    # Weight-transfer / RLHF surface (Phase 2 wire fix)
+    #
+    # The /init_weight_transfer_engine, /start_weight_update, /update_weights,
+    # /finish_weight_update, /get_world_size, /pause, /resume HTTP routes in
+    # ``vllm_mlx/server.py`` call these methods on ``_engine``. The methods
+    # are implemented on ``EngineCore`` (engine_core.py:691+), which sits
+    # *two* levels under ``BatchedEngine``: ``self._engine`` is an
+    # ``AsyncEngineCore`` whose ``.engine`` is the real ``EngineCore``.
+    #
+    # These proxies bridge that gap so the weight-transfer surface is usable
+    # against a server started with ``--continuous-batching``.
+    # ------------------------------------------------------------------
+
+    def _engine_core(self):
+        """Return the inner EngineCore, or raise a clear error."""
+        if self._engine is None:
+            raise RuntimeError(
+                "BatchedEngine._engine (AsyncEngineCore) is None — engine "
+                "is not started or has been stopped"
+            )
+        # AsyncEngineCore.engine is the EngineCore that owns the
+        # weight-transfer surface.
+        inner = getattr(self._engine, "engine", None)
+        if inner is None:
+            raise RuntimeError(
+                "BatchedEngine._engine has no .engine attribute (expected "
+                "AsyncEngineCore)"
+            )
+        return inner
+
+    def init_weight_transfer_engine(self, req: Any) -> dict[str, Any]:
+        """Proxy to EngineCore.init_weight_transfer_engine (engine_core.py)."""
+        return self._engine_core().init_weight_transfer_engine(req)
+
+    def start_weight_update(self, is_checkpoint_format: bool = True) -> dict[str, Any]:
+        """Proxy to EngineCore.start_weight_update (engine_core.py)."""
+        return self._engine_core().start_weight_update(is_checkpoint_format)
+
+    def update_weights(self, req: Any) -> dict[str, Any]:
+        """Proxy to EngineCore.update_weights (engine_core.py)."""
+        return self._engine_core().update_weights(req)
+
+    def finish_weight_update(self) -> dict[str, Any]:
+        """Proxy to EngineCore.finish_weight_update (engine_core.py)."""
+        return self._engine_core().finish_weight_update()
+
+    def get_world_size(self) -> int:
+        """Proxy to EngineCore.get_world_size (engine_core.py)."""
+        return self._engine_core().get_world_size()
+
+    def pause(self, mode: str = "wait", clear_cache: bool = True) -> dict[str, Any]:
+        """Proxy to EngineCore.pause (engine_core.py)."""
+        return self._engine_core().pause(mode=mode, clear_cache=clear_cache)
+
+    def resume(self) -> dict[str, Any]:
+        """Proxy to EngineCore.resume (engine_core.py)."""
+        return self._engine_core().resume()

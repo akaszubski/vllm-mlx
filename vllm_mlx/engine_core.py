@@ -783,7 +783,14 @@ class EngineCore:
         Closure passed into `receive_weights`. This is where the actual
         in-place update happens: `model.update(dict)` followed by
         `mx.eval(model.parameters())` to materialize lazy ops.
+
+        MLX ``nn.Module.update()`` expects a NESTED dict (e.g.
+        ``{"model": {"embed_tokens": {"weight": arr}}}``), not a flat
+        dotted-key dict. Use ``tree_unflatten`` to convert (Plan-1.5 / TRL
+        smoke surfaced this — see realign#1251 docs).
         """
+        from mlx.utils import tree_unflatten
+
         params_dict = dict(params_list)
         # L-1 mitigation: audit log every weight application. Surface
         # parameter count and a sample of names so an operator can see
@@ -803,7 +810,10 @@ class EngineCore:
                 len(params_dict),
                 sample,
             )
-        self.scheduler.model.update(params_dict)
+        # Convert flat dotted keys -> nested dict so MLX's recursive
+        # apply() walker can find each parameter slot.
+        nested_params = tree_unflatten(list(params_dict.items()))
+        self.scheduler.model.update(nested_params)
         # Force the lazy graph to materialize so the next forward pass sees
         # the new weights deterministically.
         mx.eval(self.scheduler.model.parameters())

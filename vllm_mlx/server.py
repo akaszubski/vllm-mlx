@@ -1111,6 +1111,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Phase 2 (feat/trl-shim): TRL-compatible /generate/, /reset_prefix_cache/,
+# and stub /init_communicator/ /update_named_param/ /close_communicator/
+# routes for huggingface/trl GRPOTrainer server-mode integration.
+# See vllm_mlx/api/trl_shim.py for design notes.
+from .api.trl_shim import router as _trl_shim_router  # noqa: E402
+
+app.include_router(_trl_shim_router)
+
 security = HTTPBearer(auto_error=False)
 
 
