@@ -94,6 +94,47 @@ class TRLGenerateResponse(BaseModel):
     logprobs: list[list[float]]
 
 
+class TRLScoreRequest(BaseModel):
+    """Request body for the teacher-forced ``/score/`` endpoint.
+
+    For each ``(prompt_token_ids[i], completion_token_ids[i])`` pair, returns
+    per-token log-probabilities of the completion under a single MLX forward
+    pass. Used by TRL/GRPO for importance-sampling ratios and reference-model
+    KL without triggering the sampling loop.
+
+    Fields:
+        prompt_token_ids: Batched prompt token ids. Each row is one prompt.
+        completion_token_ids: Batched completion token ids. Same batch shape
+            as ``prompt_token_ids``.
+        temperature: Softmax temperature (>0), applied *before* log_softmax.
+        return_top_logprobs: If > 0, also return top-k tokens/logprobs per
+            position. Capped at 20 (matches OpenAI Chat Completions cap).
+    """
+
+    model_config = {"extra": "allow"}
+
+    prompt_token_ids: list[list[int]]
+    completion_token_ids: list[list[int]]
+    temperature: float = 1.0
+    return_top_logprobs: int = 0
+
+
+class TRLScoreResponse(BaseModel):
+    """Response body for ``/score/``.
+
+    Fields:
+        logprobs: For each pair, a list of per-completion-token log-probabilities.
+            ``len(logprobs[i]) == len(completion_token_ids[i])``.
+        top_logprobs: When requested, ``top_logprobs[i][j]`` is a list of dicts
+            ``{"token_id": int, "logprob": float}`` sorted by logprob descending
+            for completion position ``j`` of pair ``i``. ``None`` when
+            ``return_top_logprobs == 0``.
+    """
+
+    logprobs: list[list[float]]
+    top_logprobs: list[list[list[dict]]] | None = None
+
+
 # ---------------------------------------------------------------------------
 # /generate/
 # ---------------------------------------------------------------------------
@@ -218,6 +259,124 @@ async def generate_trl(req: TRLGenerateRequest) -> dict:
         "prompt_ids": prompt_ids_all,
         "completion_ids": completion_ids_all,
         "logprobs": logprobs_all,
+    }
+
+
+# ---------------------------------------------------------------------------
+# /score/
+# ---------------------------------------------------------------------------
+
+
+@router.post("/score/", response_model=TRLScoreResponse)
+async def score_trl(req: TRLScoreRequest) -> dict:
+    """Teacher-forced per-token log-probabilities.
+
+    For each ``(prompt_token_ids[i], completion_token_ids[i])`` pair, returns
+    per-completion-token log-probabilities under a single MLX forward pass.
+
+    Unblocks TRL/GRPO importance-sampling ratios and reference-model KL
+    without a second sampling pass. In the realign campaign, this replaces
+    a ~200-250s/iter PyTorch+MPS re-score with a ~40-50s MLX forward.
+
+    Batching semantics (Phase A): pairs are processed sequentially. Pair-level
+    concurrency is future work; correctness over throughput is the goal here.
+    """
+    engine = _resolve_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+
+    # ------------------------------------------------------------------
+    # Validation. Errors here are user errors (400), not server errors.
+    # ------------------------------------------------------------------
+    prompts = req.prompt_token_ids
+    completions = req.completion_token_ids
+
+    if len(prompts) != len(completions):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Batch length mismatch: prompt_token_ids has {len(prompts)} "
+                f"rows but completion_token_ids has {len(completions)} rows. "
+                "Expected: identical batch dimensions."
+            ),
+        )
+    if len(prompts) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Empty batch: prompt_token_ids has 0 rows.",
+        )
+    for idx, (p, c) in enumerate(zip(prompts, completions)):
+        if not isinstance(p, list) or not isinstance(c, list):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Pair {idx}: prompt_token_ids and completion_token_ids "
+                    "must each be lists of ints."
+                ),
+            )
+        if len(p) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Pair {idx}: prompt_token_ids is empty.",
+            )
+        if len(c) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Pair {idx}: completion_token_ids is empty.",
+            )
+
+    if not (req.temperature > 0):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"temperature must be > 0 (got {req.temperature}). "
+                "Expected: positive float; use 1.0 for raw log-probs."
+            ),
+        )
+    if not (0 <= req.return_top_logprobs <= 20):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"return_top_logprobs must be in [0, 20] (got "
+                f"{req.return_top_logprobs}). This matches OpenAI's cap."
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # Score each pair sequentially. Phase A prioritises correctness.
+    # ------------------------------------------------------------------
+    all_logprobs: list[list[float]] = []
+    all_top_logprobs: list[list[list[dict]]] = []
+    include_top = req.return_top_logprobs > 0
+
+    for idx, (prompt_ids, completion_ids) in enumerate(zip(prompts, completions)):
+        try:
+            lps, tops = await engine.score(
+                list(prompt_ids),
+                list(completion_ids),
+                temperature=float(req.temperature),
+                return_top_logprobs=int(req.return_top_logprobs),
+            )
+        except ValueError as e:
+            # Invalid input for this pair (context overflow, malformed ids).
+            raise HTTPException(
+                status_code=400,
+                detail=f"Pair {idx}: {e}",
+            ) from e
+        except NotImplementedError as e:
+            # Engine doesn't support scoring (MLLM path).
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except RuntimeError as e:
+            # Engine not started, MLLM refusal, or transient MLX error.
+            raise HTTPException(status_code=503, detail=str(e)) from e
+
+        all_logprobs.append(list(lps))
+        if include_top:
+            all_top_logprobs.append(tops if tops is not None else [])
+
+    return {
+        "logprobs": all_logprobs,
+        "top_logprobs": all_top_logprobs if include_top else None,
     }
 
 

@@ -266,6 +266,44 @@ class BaseEngine(ABC):
         """
         pass
 
+    async def score(
+        self,
+        prompt_token_ids: list[int],
+        completion_token_ids: list[int],
+        temperature: float = 1.0,
+        return_top_logprobs: int = 0,
+    ) -> tuple[list[float], list[list[dict]] | None]:
+        """Teacher-forced per-token log-probabilities of a completion.
+
+        Text-only scoring primitive for RL importance ratios and reference-
+        model KL. Runs a single forward pass over ``prompt + completion``
+        and returns log ``P(completion_i | prompt, completion_<i)`` for every
+        completion token.
+
+        Args:
+            prompt_token_ids: Prompt token ids (BOS included by the caller).
+            completion_token_ids: Completion token ids to score (must be
+                non-empty).
+            temperature: Softmax temperature applied *before* log_softmax.
+                Positive float. 1.0 = raw log-probs.
+            return_top_logprobs: If > 0, also return top-k tokens/logprobs
+                per position. 0 disables.
+
+        Returns:
+            Tuple ``(logprobs, top_logprobs)`` — see
+            ``MLXLanguageModel.score_completion`` for exact schema.
+
+        Raises:
+            NotImplementedError: Default; subclasses must override.
+            RuntimeError: If the engine is not started or does not support
+                scoring (e.g. MLLM path).
+            ValueError: If inputs are invalid.
+        """
+        raise NotImplementedError(
+            "score() is not implemented by this engine. "
+            "Only text-only engines wrapping MLXLanguageModel support scoring."
+        )
+
     def get_stats(self) -> dict[str, Any]:
         """Get engine statistics. Override in subclasses."""
         return {}

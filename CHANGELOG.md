@@ -9,6 +9,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `POST /score/` endpoint (TRL shim): teacher-forced per-token log-probabilities
+  for `(prompt_token_ids, completion_token_ids)` pairs via a single MLX forward
+  pass. New Pydantic models `TRLScoreRequest` and `TRLScoreResponse` in
+  `vllm_mlx/api/trl_shim.py`. Unblocks TRL/GRPO importance-sampling ratios and
+  reference-model KL without a second sampling pass — replaces realign's
+  ~200-250s/iter PyTorch+MPS re-score at ~40-50s per iter (~3.8x speedup on the
+  M3 GRPO training campaign). Zero recipe-fidelity cost: numerics use fp32
+  log_softmax with temperature applied before normalization. Text-only for
+  Phase A; MLLM path rejects with HTTP 503. `SimpleEngine.score()` and
+  `BatchedEngine.score()` proxy to a new `MLXLanguageModel.score_completion`
+  primitive under the existing generation lock (avoids Metal command-buffer
+  deadlocks — see realign `feedback_mlx_deadlock_reboot`).
 - `SamplingParams.n` group sampling (1..64) and `best_of` field for `/v1/chat/completions` and `/v1/completions`. Enables GRPO/RLHF rollout group sampling against a single colocated MLX server. Streaming (`stream=True`) with `n>1` rejected with HTTP 400 (OpenAI-compatible error envelope). Prefix cache automatically dedups the shared prompt-KV across rollouts. Anthropic `/v1/messages` is unaffected (native Anthropic API does not expose `n`). E2E model-load integration tests deferred to a follow-up patch. (realign#1308 / Plan-1.5 patch #1)
 - Per-token logprobs on `/v1/chat/completions` (`logprobs`, `top_logprobs`
   request fields; `choices[*].logprobs.content[]` response array). Required

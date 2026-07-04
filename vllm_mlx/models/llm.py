@@ -389,6 +389,246 @@ class MLXLanguageModel:
             **kwargs,
         )
 
+    # ------------------------------------------------------------------
+    # score_completion — teacher-forced per-token logprobs (Phase A)
+    #
+    # Motivation: TRL/GRPO importance-sampling ratios require the log-prob
+    # of every completion token under the *current* policy AND under the
+    # frozen reference model. Sampling logprobs from ``/generate/`` only
+    # cover the policy at rollout time; the trainer needs a way to re-score
+    # arbitrary (prompt, completion) pairs without triggering the sampling
+    # loop. Realign's PyTorch+MPS re-score path is ~200-250s/iter; one MLX
+    # teacher-forced forward pass replaces it at ~40-50s. See
+    # ``realign/docs/research/2026-07-04-vllm-mlx-score-endpoint.md``.
+    # ------------------------------------------------------------------
+
+    def _forward_full_sequence(self, full_ids: "mx.array") -> "mx.array":
+        """Run the model forward on a full [1, T] sequence with L2-friendly chunking.
+
+        Mirrors the chunking pattern from ``model_runner.py:_prefill_with_chunking``
+        so long prompts do not spill L2 cache. Returns the full logits tensor
+        ``[1, T, vocab_size]``. No sampling; no cache retention.
+
+        Args:
+            full_ids: Token ids as an mlx array with shape ``[1, T]``.
+
+        Returns:
+            Logits array of shape ``[1, T, vocab_size]``.
+
+        Raises:
+            RuntimeError: If the model has not been loaded.
+        """
+        import mlx.core as mx
+
+        if not self._loaded or self.model is None:
+            raise RuntimeError(
+                "score_completion called before model.load(). "
+                "Call MLXLanguageModel.load() first.\n"
+                "See: docs/api.md"
+            )
+
+        if full_ids.ndim == 1:
+            full_ids = full_ids.reshape(1, -1)
+
+        # L2-friendly chunk size; falls back to a conservative default when
+        # the optimizations module is unavailable.
+        try:
+            from vllm_mlx.optimizations import get_optimal_prefill_size
+        except ImportError:  # pragma: no cover — defensive
+            def get_optimal_prefill_size(seq_len: int) -> int:
+                return min(512, seq_len)
+
+        seq_len = full_ids.shape[-1]
+        chunk_size = get_optimal_prefill_size(seq_len)
+
+        # Single-pass fast path
+        if seq_len <= chunk_size:
+            return self.model(full_ids)
+
+        # Chunked forward. Each chunk uses the running KV cache so later chunks
+        # attend to earlier tokens (position-consistent). Only the final chunk's
+        # logits are kept — we still want the full-sequence logits though, so
+        # we accumulate.
+        from mlx_lm.models.cache import make_prompt_cache
+
+        cache = make_prompt_cache(self.model)
+        parts: list[mx.array] = []
+        for i in range(0, seq_len, chunk_size):
+            chunk = full_ids[:, i : i + chunk_size]
+            logits = self.model(chunk, cache=cache)
+            parts.append(logits)
+            mx.eval([c.state for c in cache])
+        return mx.concatenate(parts, axis=1)
+
+    def score_completion(
+        self,
+        prompt_token_ids: list[int],
+        completion_token_ids: list[int],
+        temperature: float = 1.0,
+        return_top_logprobs: int = 0,
+    ) -> tuple[list[float], list[list[dict]] | None]:
+        """Teacher-forced per-token log-probabilities of a completion.
+
+        For a fixed ``(prompt, completion)`` pair, runs a single forward pass
+        over ``prompt + completion`` and returns log ``P(completion_i | prompt,
+        completion_<i)`` for every completion token. This is the primitive TRL
+        needs for GRPO importance-sampling ratios and reference-model KL — one
+        MLX forward per pair instead of two PyTorch/MPS forwards.
+
+        Args:
+            prompt_token_ids: The prompt token ids (BOS should already be
+                included by the caller — matches ``/generate/`` behaviour).
+            completion_token_ids: The completion token ids to score. Must be
+                non-empty.
+            temperature: Softmax temperature applied to logits *before*
+                ``log_softmax`` (matches realign's ``chunked_log_softmax``
+                convention). ``temperature=1.0`` = raw model log-probs.
+            return_top_logprobs: When > 0, also return the top-k tokens and
+                their logprobs at every completion position. Capped by the
+                caller (shim rejects > 20).
+
+        Returns:
+            A tuple ``(logprobs, top_logprobs)``:
+              - ``logprobs`` is a list of ``len(completion_token_ids)`` floats,
+                one per completion position.
+              - ``top_logprobs`` is ``None`` when ``return_top_logprobs == 0``,
+                else a list of length ``len(completion_token_ids)`` where each
+                element is a list of ``return_top_logprobs`` dicts with keys
+                ``token_id`` (int) and ``logprob`` (float), sorted by logprob
+                descending.
+
+        Raises:
+            RuntimeError: If the model has not been loaded.
+            ValueError: If either token list is empty, if the combined
+                sequence exceeds ``max_position_embeddings``, or if
+                ``temperature`` is not positive.
+        """
+        import mlx.core as mx
+
+        if not self._loaded or self.model is None:
+            raise RuntimeError(
+                "score_completion called before model.load(). "
+                "Call MLXLanguageModel.load() first."
+            )
+
+        if not prompt_token_ids:
+            raise ValueError(
+                "score_completion: prompt_token_ids is empty. "
+                "Expected: at least one prompt token id."
+            )
+        if not completion_token_ids:
+            raise ValueError(
+                "score_completion: completion_token_ids is empty. "
+                "Expected: at least one completion token id."
+            )
+        if not (temperature > 0):
+            raise ValueError(
+                f"score_completion: temperature must be > 0 (got {temperature}). "
+                "Expected: positive float; use 1.0 for raw log-probs."
+            )
+
+        prompt_len = len(prompt_token_ids)
+        completion_len = len(completion_token_ids)
+        total_len = prompt_len + completion_len
+
+        # Context-length guard. mlx-lm models expose their config via
+        # ``model.args`` (Qwen3, Llama, etc.); fall back to ``model.config``.
+        max_pos = None
+        args = getattr(self.model, "args", None)
+        if args is not None:
+            max_pos = getattr(args, "max_position_embeddings", None)
+        if max_pos is None:
+            config = getattr(self.model, "config", None)
+            if config is not None:
+                max_pos = getattr(config, "max_position_embeddings", None)
+        if max_pos is not None and total_len > max_pos:
+            raise ValueError(
+                f"score_completion: prompt+completion length {total_len} "
+                f"exceeds model max_position_embeddings {max_pos}. "
+                "Expected: shorter inputs, or a model with longer context."
+            )
+
+        # Build the full sequence tensor. The model needs the full context so
+        # each completion position sees prompt + all prior completion tokens.
+        full_ids = mx.array(
+            list(prompt_token_ids) + list(completion_token_ids), dtype=mx.int32
+        ).reshape(1, -1)
+
+        # Forward pass. Returns [1, total_len, vocab_size].
+        logits = self._forward_full_sequence(full_ids)
+
+        # Slice to the positions that predict completion tokens. Position i
+        # predicts token i+1. So completion token j (0-indexed within the
+        # completion) is predicted at index (prompt_len - 1 + j). We need
+        # ``completion_len`` positions starting at prompt_len - 1.
+        start = prompt_len - 1
+        end = start + completion_len
+        completion_logits = logits[:, start:end, :]  # [1, completion_len, V]
+
+        # Numerical safety per realign convention: cast to fp32 BEFORE
+        # softmax, apply temperature BEFORE log_softmax, cast back on exit.
+        model_dtype = completion_logits.dtype
+        completion_logits_fp32 = completion_logits.astype(mx.float32)
+
+        # Apply temperature scaling before log_softmax (chunked_log_softmax
+        # invariant — larger temp flattens the distribution, smaller
+        # sharpens it).
+        scaled = completion_logits_fp32 / temperature
+
+        # Numerically stable log_softmax.
+        log_probs = scaled - mx.logsumexp(scaled, axis=-1, keepdims=True)
+
+        # Gather the chosen-token log-prob at each completion position.
+        # Build an [1, completion_len] index array.
+        completion_ids_arr = mx.array(list(completion_token_ids), dtype=mx.int32)
+        # Fancy index via mx.take_along_axis for a batch-1 gather.
+        gathered = mx.take_along_axis(
+            log_probs,
+            completion_ids_arr.reshape(1, -1, 1),
+            axis=-1,
+        ).squeeze(-1)  # [1, completion_len]
+
+        # Evaluate only what we return (bandwidth-friendly per realign
+        # numerical-safety rule).
+        mx.eval(gathered)
+        chosen_logprobs: list[float] = [float(x) for x in gathered[0].tolist()]
+
+        top_logprobs_out: list[list[dict]] | None = None
+        if return_top_logprobs > 0:
+            k = int(return_top_logprobs)
+            # Cap k by vocab size to avoid runtime errors.
+            vocab_size = log_probs.shape[-1]
+            k = min(k, vocab_size)
+
+            # For each position, take the top-k tokens by log-prob.
+            # log_probs has shape [1, completion_len, V]. Sort descending.
+            # mx.argpartition is available; use argsort for simplicity.
+            sorted_ids = mx.argsort(-log_probs, axis=-1)[:, :, :k]  # [1, L, k]
+            sorted_lp = mx.take_along_axis(log_probs, sorted_ids, axis=-1)
+            mx.eval(sorted_ids, sorted_lp)
+
+            ids_py = sorted_ids[0].tolist()  # [L][k]
+            lp_py = sorted_lp[0].tolist()  # [L][k]
+            top_logprobs_out = []
+            for pos_ids, pos_lps in zip(ids_py, lp_py):
+                row = [
+                    {"token_id": int(t), "logprob": float(lp)}
+                    for t, lp in zip(pos_ids, pos_lps)
+                ]
+                top_logprobs_out.append(row)
+
+        # Cast back to model dtype implicitly not needed — we return Python
+        # floats. But we free the fp32 intermediates.
+        del completion_logits_fp32, scaled, log_probs, model_dtype
+
+        # Metal buffer hygiene (realign #981 / `feedback_mlx_deadlock_reboot`
+        # class): campaign-scale scoring (5000 iters × N pairs) accumulates
+        # Metal buffers if we never release the cache. Clear on the way out
+        # so repeated scoring calls hold a bounded footprint.
+        mx.clear_cache()
+
+        return chosen_logprobs, top_logprobs_out
+
     def get_model_info(self) -> dict:
         """Get information about the loaded model."""
         if not self._loaded:
