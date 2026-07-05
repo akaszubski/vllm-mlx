@@ -172,10 +172,19 @@ class MLXWeightTransferEngine(
             loaded = mx.load(tmp_path)
             return self._coerce_to_dict(loaded, tmp_path)
         finally:
+            # Security A08 / #1315: log failed cleanups so a stuck temp file
+            # (permissions, disk full, race with another process) is visible
+            # in operator logs rather than silently accumulating multi-GB
+            # weight payloads in /tmp until OS cleanup fires.
             try:
                 os.unlink(tmp_path)
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.warning(
+                    "Failed to unlink temp weight file %s: %s. "
+                    "Payload may persist in /tmp until OS-level cleanup.",
+                    tmp_path,
+                    exc,
+                )
 
     @staticmethod
     def _coerce_to_dict(loaded: Any, source: str) -> Dict[str, Any]:
