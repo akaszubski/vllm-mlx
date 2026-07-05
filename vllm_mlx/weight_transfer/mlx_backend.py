@@ -131,7 +131,9 @@ class MLXWeightTransferEngine(
         arrays = self._load_arrays(update_info)
 
         params_list: List[Tuple[str, Any]] = []
-        for name, expected_shape in zip(update_info.names, update_info.shapes):
+        for name, expected_shape, declared_dtype in zip(
+            update_info.names, update_info.shapes, update_info.dtype_names
+        ):
             if name not in arrays:
                 raise KeyError(
                     f"update_info.names references {name!r} but it was not "
@@ -144,6 +146,19 @@ class MLXWeightTransferEngine(
                 raise ValueError(
                     f"shape mismatch for {name!r}: "
                     f"expected {expected}, got {actual_shape}"
+                )
+            # Security A08 / #1316: verify declared dtype matches loaded array.
+            # dtype_names is structurally length-checked above but never compared
+            # to actual data — a caller declaring float32 while shipping
+            # bfloat16 would silently poison inference.
+            actual_dtype = str(arr.dtype)
+            if actual_dtype != declared_dtype:
+                raise ValueError(
+                    f"dtype mismatch for {name!r}: "
+                    f"declared {declared_dtype!r}, actual {actual_dtype!r}. "
+                    "This would silently corrupt inference — the transfer "
+                    "engine refuses to load a param whose shipped dtype "
+                    "diverges from the declaration."
                 )
             params_list.append((name, arr))
 
