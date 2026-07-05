@@ -3877,6 +3877,45 @@ def _start_request_budget(timeout: float | None) -> tuple[float, float]:
     return total_timeout, time.monotonic() + total_timeout
 
 
+async def _gather_cancel_siblings(*coros):
+    """asyncio.gather variant that cancels siblings on first exception (#1311).
+
+    Standard asyncio.gather raises the first exception immediately but lets
+    sibling coroutines run to natural completion, holding KV-cache and GPU
+    compute for output that will be discarded. This helper cancels the
+    still-running tasks on any child failure so GPU resources free promptly.
+    """
+    tasks = [asyncio.create_task(c) for c in coros]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+
+# #1312: hard cap on prompt_count × n concurrent rollouts per request.
+# Prevents authenticated clients from firing thousands of concurrent
+# engine.generate coroutines within a single rate-limit slot.
+_MAX_COMBINED_FANOUT = int(os.environ.get("VLLM_MLX_MAX_COMBINED_FANOUT", "128"))
+
+
+def _enforce_fanout_cap(prompt_count: int, n: int, endpoint: str) -> None:
+    combined = max(prompt_count, 1) * max(n, 1)
+    if combined > _MAX_COMBINED_FANOUT:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"{endpoint}: request would spawn {combined} concurrent "
+                f"rollouts (prompt_count={prompt_count} × n={n}), exceeds "
+                f"VLLM_MLX_MAX_COMBINED_FANOUT={_MAX_COMBINED_FANOUT}. "
+                "Reduce prompt list or n, or raise the cap. See #1312."
+            ),
+        )
+
+
 def _remaining_request_timeout(total_timeout: float, deadline: float) -> float:
     """Compute remaining request budget or raise the standard timeout error."""
     remaining = deadline - time.monotonic()
@@ -4017,10 +4056,17 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 generate_kwargs["specprefill_keep_pct"] = request.specprefill_keep_pct
             if request.n > 1:
                 # Group sampling: fan out N parallel rollouts for this prompt.
-                # Prompt tokens are counted once per prompt (shared prefix KV);
-                # completion tokens are summed across all rollouts.
+                # #1311: use _gather_cancel_siblings so a first-child failure
+                # cancels the rest instead of leaving them to waste GPU.
+                # #1312: cap combined fanout across prompt list × n.
                 try:
-                    gather_coro = asyncio.gather(
+                    _prompt_count = (
+                        len(request.prompt)
+                        if isinstance(request.prompt, list)
+                        else 1
+                    )
+                    _enforce_fanout_cap(_prompt_count, request.n, "/v1/completions")
+                    gather_coro = _gather_cancel_siblings(
                         *(
                             engine.generate(**generate_kwargs)
                             for _ in range(request.n)
@@ -4256,10 +4302,11 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
 
         if request.n > 1:
             # Group sampling: fan out N parallel chat rollouts.
-            # Prompt tokens are counted once (shared prefix KV across rollouts);
-            # completion tokens are summed across all rollouts.
+            # #1311: cancel siblings on first-child failure.
+            # #1312: cap fanout (chat is single-prompt so cap is on n only).
             try:
-                gather_coro = asyncio.gather(
+                _enforce_fanout_cap(1, request.n, "/v1/chat/completions")
+                gather_coro = _gather_cancel_siblings(
                     *(
                         engine.chat(
                             messages=prepared.messages, **prepared.chat_kwargs
