@@ -1697,6 +1697,56 @@ class SimpleEngine(BaseEngine):
                 finish_reason="length",
             )
 
+    async def score(
+        self,
+        prompt_token_ids: list[int],
+        completion_token_ids: list[int],
+        temperature: float = 1.0,
+        return_top_logprobs: int = 0,
+    ) -> tuple[list[float], list[list[dict]] | None]:
+        """Teacher-forced per-token logprobs (Phase A).
+
+        Delegates to ``MLXLanguageModel.score_completion`` under the same
+        ``_generation_lock`` used by generate. Text-only — MLLM path is
+        rejected with a clear RuntimeError so the shim can 503 rather than
+        return a silently wrong number.
+
+        Args:
+            prompt_token_ids: Prompt token ids (BOS included by caller).
+            completion_token_ids: Completion token ids to score.
+            temperature: Softmax temperature (>0). Applied before log_softmax.
+            return_top_logprobs: Top-k per-position (0 disables).
+
+        Returns:
+            ``(logprobs, top_logprobs)`` — see ``MLXLanguageModel.score_completion``.
+
+        Raises:
+            RuntimeError: If the engine wraps an MLLM model, or if the model
+                has not been started.
+            ValueError: Propagated from ``score_completion`` for invalid inputs.
+        """
+        if self._is_mllm:
+            raise RuntimeError(
+                "score() is text-only; MLLM path not supported. "
+                "Expected: a text-only MLXLanguageModel backend."
+            )
+        if not self._loaded:
+            await self.start()
+        if self._model is None:
+            raise RuntimeError(
+                "SimpleEngine._model is None after start(); scoring unavailable."
+            )
+        # Run the blocking MLX call under the generation lock. This mirrors
+        # the discipline used by chat()/generate() — never touch MLX/Metal
+        # concurrently or the command buffer can corrupt.
+        return await self._run_blocking_serialized(
+            self._model.score_completion,
+            list(prompt_token_ids),
+            list(completion_token_ids),
+            temperature=float(temperature),
+            return_top_logprobs=int(return_top_logprobs),
+        )
+
     def get_stats(self) -> dict[str, Any]:
         """Get engine statistics."""
         stats = {

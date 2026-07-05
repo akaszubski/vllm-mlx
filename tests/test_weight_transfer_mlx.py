@@ -773,3 +773,76 @@ class TestMLXBackendBehavior:
 def test_integration_real_model_rollout() -> None:  # pragma: no cover
     """End-to-end: realign train --reload-every 1. Tracked separately
     (realign#1309 follow-up)."""
+
+
+# ---------------------------------------------------------------------------
+# Regression: dotted-key params_dict must be tree-unflattened before update()
+# ---------------------------------------------------------------------------
+
+
+def test_load_weights_handles_dotted_param_names() -> None:
+    """EngineCore._load_weights must accept dotted-key (name, array) pairs
+    like ``("model.embed_tokens.weight", arr)`` — these are what real
+    HuggingFace-shaped trainer pushes look like (TRL GRPOTrainer).
+
+    The pre-fix bug: ``model.update({"model.embed_tokens.weight": arr})``
+    raised ``ValueError: Module does not have parameter named ...`` because
+    MLX's ``nn.Module.update()`` walks a NESTED dict, not a flat dotted-key
+    one. Fix uses ``mlx.utils.tree_unflatten`` before calling ``update()``.
+
+    Surfaced by the TRL+vllm-mlx Phase 2 smoke (2026-06-29). The existing
+    MagicMock-based tests masked it because MagicMock answers any attribute.
+    """
+    from mlx.utils import tree_unflatten
+
+    # Build a small nested module so update() must walk the tree.
+    class NestedModule(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+
+            class Inner(nn.Module):
+                def __init__(self) -> None:
+                    super().__init__()
+                    self.embed_tokens = nn.Linear(4, 4, bias=False)
+
+            self.model = Inner()
+
+    module = NestedModule()
+    # Mimic exactly what EngineCore._load_weights does post-fix.
+    params_list = [
+        ("model.embed_tokens.weight", mx.zeros((4, 4))),
+    ]
+    nested = tree_unflatten(params_list)
+    # Must not raise (pre-fix code did: ValueError: Module does not have parameter named ...).
+    module.update(nested)
+    mx.eval(module.parameters())
+    # Confirm the actual values landed where MLX expects them.
+    new_weight = module.model.embed_tokens.weight
+    assert new_weight.shape == (4, 4)
+    assert mx.all(new_weight == 0).item()
+
+
+def test_load_weights_flat_dict_raises_without_unflatten() -> None:
+    """Anti-tautology: confirm the pre-fix path actually fails.
+
+    Without ``tree_unflatten``, passing a flat dotted-key dict to MLX's
+    ``Module.update()`` raises ``ValueError`` — this is the bug that the
+    fix above prevents. If this test ever passes without the fix, MLX
+    semantics changed and the regression test above can be relaxed.
+    """
+
+    class NestedModule(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+
+            class Inner(nn.Module):
+                def __init__(self) -> None:
+                    super().__init__()
+                    self.embed_tokens = nn.Linear(4, 4, bias=False)
+
+            self.model = Inner()
+
+    module = NestedModule()
+    flat = {"model.embed_tokens.weight": mx.zeros((4, 4))}
+    with pytest.raises(ValueError, match="does not have parameter named"):
+        module.update(flat)

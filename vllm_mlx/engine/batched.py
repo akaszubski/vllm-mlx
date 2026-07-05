@@ -17,6 +17,26 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any
 
+# Module-level lock used to serialize scoring calls into MLX/Metal.
+# Realign's `feedback_mlx_deadlock_reboot` rule: concurrent Metal command
+# buffers cascade into a hard deadlock requiring reboot. Even though the
+# LLM path uses AsyncEngineCore for generation, scoring bypasses that queue
+# and touches MLX directly — so it needs its own lock.
+_SCORE_LOCK: asyncio.Lock | None = None
+
+# One-shot module-level flag so the cross-endpoint concurrency assumption is
+# announced exactly once per process, not once per scoring call. Flipped to
+# True on the first `BatchedEngine.score` entry.
+_SCORE_WARNING_LOGGED: bool = False
+
+
+def _get_score_lock() -> asyncio.Lock:
+    """Lazy-init the module-level score lock in the current event loop."""
+    global _SCORE_LOCK
+    if _SCORE_LOCK is None:
+        _SCORE_LOCK = asyncio.Lock()
+    return _SCORE_LOCK
+
 from ..api.tool_calling import convert_tools_for_template
 from ..api.utils import clean_output_text, extract_multimodal_content, is_mllm_model
 from .base import (
@@ -1020,6 +1040,137 @@ class BatchedEngine(BaseEngine):
         ):
             yield output
 
+    async def score(
+        self,
+        prompt_token_ids: list[int],
+        completion_token_ids: list[int],
+        temperature: float = 1.0,
+        return_top_logprobs: int = 0,
+    ) -> tuple[list[float], list[list[dict]] | None]:
+        """Teacher-forced per-token logprobs (Phase A).
+
+        Proxies to ``MLXLanguageModel.score_completion`` under a module-level
+        asyncio lock. Scoring bypasses the AsyncEngineCore scheduler by design
+        — it's a single deterministic forward pass, not a sampling loop.
+
+        Args:
+            prompt_token_ids: Prompt token ids (BOS included by caller).
+            completion_token_ids: Completion token ids to score.
+            temperature: Softmax temperature (>0), applied before log_softmax.
+            return_top_logprobs: Top-k per-position (0 disables).
+
+        Returns:
+            ``(logprobs, top_logprobs)`` — see ``MLXLanguageModel.score_completion``.
+
+        Raises:
+            NotImplementedError: When wrapping an MLLM model. Score is
+                text-only for Phase A; multimodal support is future work.
+            RuntimeError: If the engine has not been started.
+            ValueError: Propagated from ``score_completion``.
+        """
+        # ------------------------------------------------------------------
+        # Cross-endpoint concurrency contract (realign `feedback_mlx_deadlock_reboot`)
+        #
+        # This method serializes with concurrent `/score/` calls via
+        # `_SCORE_LOCK`. When the AsyncEngineCore exposes a pause/resume
+        # surface (see `BatchedEngine._engine_core()` -> `EngineCore.pause`),
+        # we ALSO pause the generation scheduler for the duration of the
+        # forward pass so no `/generate/` Metal work is in-flight concurrently.
+        # If pause/resume is unavailable, the caller MUST ensure no
+        # `/generate/` request is in-flight before calling `/score/`.
+        # Concurrent MLX operations reproduce a documented Metal deadlock
+        # (realign memory `feedback_mlx_deadlock_reboot`) that requires
+        # `sudo reboot` to recover from.
+        # ------------------------------------------------------------------
+        global _SCORE_WARNING_LOGGED
+        if not _SCORE_WARNING_LOGGED:
+            _SCORE_WARNING_LOGGED = True
+            logger.warning(
+                "BatchedEngine.score(): cross-endpoint concurrency contract — "
+                "concurrent /generate/ and /score/ calls hit the same MLX "
+                "device. score() pauses the AsyncEngineCore scheduler when a "
+                "pause API is available; otherwise the caller MUST serialize "
+                "with /generate/ externally. Realign memory "
+                "`feedback_mlx_deadlock_reboot` documents the hard Metal "
+                "deadlock (sudo reboot required) that concurrent Metal "
+                "command buffers reproduce."
+            )
+
+        if self._is_mllm:
+            raise NotImplementedError(
+                "score() requires a text-only MLXLanguageModel backend. "
+                "This engine wraps an MLLM model."
+            )
+        if not self._loaded:
+            await self.start()
+        if self._model is None or self._tokenizer is None:
+            raise RuntimeError(
+                "BatchedEngine._model or ._tokenizer is None; scoring unavailable."
+            )
+
+        # Build a transient MLXLanguageModel wrapper around the already-loaded
+        # model+tokenizer so we can call the same score_completion primitive
+        # used by SimpleEngine. No load() call — we splice in the live handles.
+        from ..models.llm import MLXLanguageModel
+
+        wrapper = MLXLanguageModel.__new__(MLXLanguageModel)
+        wrapper.model_name = self._model_name
+        wrapper.tokenizer_name = self._model_name
+        wrapper.trust_remote_code = self._trust_remote_code
+        wrapper._mtp = False
+        wrapper._mtp_num_draft_tokens = 1
+        wrapper.model = self._model
+        wrapper.tokenizer = self._tokenizer
+        wrapper._loaded = True
+
+        lock = _get_score_lock()
+        async with lock:
+            # Pause AsyncEngineCore so no generation Metal work is in-flight
+            # while the scoring forward pass runs. clear_cache=False so we
+            # do NOT wipe the KV/prefix caches — they must survive so
+            # generation can resume cleanly after score returns.
+            engine_core = None
+            if self._engine is not None:
+                try:
+                    engine_core = self._engine_core()
+                except RuntimeError:
+                    engine_core = None
+            if engine_core is not None:
+                try:
+                    engine_core.pause(mode="wait", clear_cache=False)
+                except AttributeError:
+                    # No pause surface on this engine core — fall through to
+                    # lock-only serialization (Part B warning applies).
+                    engine_core = None
+                except Exception as pause_err:  # pragma: no cover — defensive
+                    logger.warning(
+                        "BatchedEngine.score(): pause() failed (%s); "
+                        "proceeding under _SCORE_LOCK only. Caller MUST "
+                        "avoid concurrent /generate/ requests.",
+                        pause_err,
+                    )
+                    engine_core = None
+            try:
+                return await asyncio.to_thread(
+                    wrapper.score_completion,
+                    list(prompt_token_ids),
+                    list(completion_token_ids),
+                    float(temperature),
+                    int(return_top_logprobs),
+                )
+            finally:
+                if engine_core is not None:
+                    try:
+                        engine_core.resume()
+                    except AttributeError:
+                        pass
+                    except Exception as resume_err:  # pragma: no cover
+                        logger.error(
+                            "BatchedEngine.score(): resume() failed (%s); "
+                            "generation scheduler may remain paused.",
+                            resume_err,
+                        )
+
     def get_stats(self) -> dict[str, Any]:
         """Get engine statistics."""
         stats = {
@@ -1110,3 +1261,62 @@ class BatchedEngine(BaseEngine):
                 return
         if self._engine and hasattr(self._engine, "clear_prefix_cache"):
             self._engine.clear_prefix_cache()
+
+    # ------------------------------------------------------------------
+    # Weight-transfer / RLHF surface (Phase 2 wire fix)
+    #
+    # The /init_weight_transfer_engine, /start_weight_update, /update_weights,
+    # /finish_weight_update, /get_world_size, /pause, /resume HTTP routes in
+    # ``vllm_mlx/server.py`` call these methods on ``_engine``. The methods
+    # are implemented on ``EngineCore`` (engine_core.py:691+), which sits
+    # *two* levels under ``BatchedEngine``: ``self._engine`` is an
+    # ``AsyncEngineCore`` whose ``.engine`` is the real ``EngineCore``.
+    #
+    # These proxies bridge that gap so the weight-transfer surface is usable
+    # against a server started with ``--continuous-batching``.
+    # ------------------------------------------------------------------
+
+    def _engine_core(self):
+        """Return the inner EngineCore, or raise a clear error."""
+        if self._engine is None:
+            raise RuntimeError(
+                "BatchedEngine._engine (AsyncEngineCore) is None — engine "
+                "is not started or has been stopped"
+            )
+        # AsyncEngineCore.engine is the EngineCore that owns the
+        # weight-transfer surface.
+        inner = getattr(self._engine, "engine", None)
+        if inner is None:
+            raise RuntimeError(
+                "BatchedEngine._engine has no .engine attribute (expected "
+                "AsyncEngineCore)"
+            )
+        return inner
+
+    def init_weight_transfer_engine(self, req: Any) -> dict[str, Any]:
+        """Proxy to EngineCore.init_weight_transfer_engine (engine_core.py)."""
+        return self._engine_core().init_weight_transfer_engine(req)
+
+    def start_weight_update(self, is_checkpoint_format: bool = True) -> dict[str, Any]:
+        """Proxy to EngineCore.start_weight_update (engine_core.py)."""
+        return self._engine_core().start_weight_update(is_checkpoint_format)
+
+    def update_weights(self, req: Any) -> dict[str, Any]:
+        """Proxy to EngineCore.update_weights (engine_core.py)."""
+        return self._engine_core().update_weights(req)
+
+    def finish_weight_update(self) -> dict[str, Any]:
+        """Proxy to EngineCore.finish_weight_update (engine_core.py)."""
+        return self._engine_core().finish_weight_update()
+
+    def get_world_size(self) -> int:
+        """Proxy to EngineCore.get_world_size (engine_core.py)."""
+        return self._engine_core().get_world_size()
+
+    def pause(self, mode: str = "wait", clear_cache: bool = True) -> dict[str, Any]:
+        """Proxy to EngineCore.pause (engine_core.py)."""
+        return self._engine_core().pause(mode=mode, clear_cache=clear_cache)
+
+    def resume(self) -> dict[str, Any]:
+        """Proxy to EngineCore.resume (engine_core.py)."""
+        return self._engine_core().resume()

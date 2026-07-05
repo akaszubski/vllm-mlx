@@ -131,7 +131,9 @@ class MLXWeightTransferEngine(
         arrays = self._load_arrays(update_info)
 
         params_list: List[Tuple[str, Any]] = []
-        for name, expected_shape in zip(update_info.names, update_info.shapes):
+        for name, expected_shape, declared_dtype in zip(
+            update_info.names, update_info.shapes, update_info.dtype_names
+        ):
             if name not in arrays:
                 raise KeyError(
                     f"update_info.names references {name!r} but it was not "
@@ -145,6 +147,19 @@ class MLXWeightTransferEngine(
                     f"shape mismatch for {name!r}: "
                     f"expected {expected}, got {actual_shape}"
                 )
+            # Security A08 / #1316: verify declared dtype matches loaded array.
+            # dtype_names is structurally length-checked above but never compared
+            # to actual data — a caller declaring float32 while shipping
+            # bfloat16 would silently poison inference.
+            actual_dtype = str(arr.dtype)
+            if actual_dtype != declared_dtype:
+                raise ValueError(
+                    f"dtype mismatch for {name!r}: "
+                    f"declared {declared_dtype!r}, actual {actual_dtype!r}. "
+                    "This would silently corrupt inference — the transfer "
+                    "engine refuses to load a param whose shipped dtype "
+                    "diverges from the declaration."
+                )
             params_list.append((name, arr))
 
         load_weights(params_list)
@@ -152,14 +167,49 @@ class MLXWeightTransferEngine(
     def _load_arrays(
         self, update_info: MLXWeightTransferUpdateInfo
     ) -> Dict[str, Any]:
-        """Load arrays from `path` or `packed` bytes."""
+        """Load arrays from `path` or `packed` bytes.
+
+        Security A03 / #1313: `path` mode is fail-closed. It is refused unless
+        env var ``VLLM_MLX_WEIGHT_TRANSFER_ALLOWED_DIR`` declares a
+        colon-separated allowlist of parent directories, and the resolved
+        (symlink-expanded, `..`-collapsed) path lies under one of them.
+        Prevents directory-traversal reads of arbitrary safetensors files
+        (or the error-message leak from attempting to parse non-safetensors
+        like ``~/.ssh/id_rsa``).
+        """
         if update_info.path is not None:
-            if not os.path.exists(update_info.path):
+            allowed_env = os.environ.get(
+                "VLLM_MLX_WEIGHT_TRANSFER_ALLOWED_DIR", ""
+            ).strip()
+            if not allowed_env:
+                raise PermissionError(
+                    "weight-update path mode disabled: "
+                    "VLLM_MLX_WEIGHT_TRANSFER_ALLOWED_DIR is unset. "
+                    "Set it to a colon-separated list of directories the "
+                    "transfer engine may load from, or use the packed bytes "
+                    "path (update_info.packed) instead. See #1313."
+                )
+            requested = os.path.realpath(update_info.path)
+            allowed_dirs = [
+                os.path.realpath(d) for d in allowed_env.split(":") if d
+            ]
+            if not any(
+                requested == d
+                or requested.startswith(d.rstrip("/") + "/")
+                for d in allowed_dirs
+            ):
+                raise PermissionError(
+                    f"weight-update path {update_info.path!r} resolves to "
+                    f"{requested!r}, which is not under any allowed dir in "
+                    f"VLLM_MLX_WEIGHT_TRANSFER_ALLOWED_DIR ({allowed_env!r}). "
+                    "Refusing to load — directory-traversal check. See #1313."
+                )
+            if not os.path.exists(requested):
                 raise FileNotFoundError(
                     f"weight-update path does not exist: {update_info.path}"
                 )
-            loaded = mx.load(update_info.path)
-            return self._coerce_to_dict(loaded, update_info.path)
+            loaded = mx.load(requested)
+            return self._coerce_to_dict(loaded, requested)
 
         # packed bytes → tempfile → mx.load
         assert update_info.packed is not None
@@ -172,10 +222,19 @@ class MLXWeightTransferEngine(
             loaded = mx.load(tmp_path)
             return self._coerce_to_dict(loaded, tmp_path)
         finally:
+            # Security A08 / #1315: log failed cleanups so a stuck temp file
+            # (permissions, disk full, race with another process) is visible
+            # in operator logs rather than silently accumulating multi-GB
+            # weight payloads in /tmp until OS cleanup fires.
             try:
                 os.unlink(tmp_path)
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.warning(
+                    "Failed to unlink temp weight file %s: %s. "
+                    "Payload may persist in /tmp until OS-level cleanup.",
+                    tmp_path,
+                    exc,
+                )
 
     @staticmethod
     def _coerce_to_dict(loaded: Any, source: str) -> Dict[str, Any]:

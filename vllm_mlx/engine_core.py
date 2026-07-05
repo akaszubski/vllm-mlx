@@ -691,24 +691,38 @@ class EngineCore:
     def init_weight_transfer_engine(self, req: Any) -> Dict[str, Any]:
         """Create the MLX weight-transfer engine.
 
-        Idempotent — re-init replaces any existing engine instance.
+        Idempotent for a single trainer.
 
-        Args:
-            req: Request object or dict with ``init_info`` (dict of init args).
+        Security A01 / #1314: refuse re-init when a weight update is
+        already in progress. Prevents a second authenticated trainer from
+        replacing the engine mid-flight while the first trainer's rollout
+        is still applying weights. Pass ``force=True`` in the request to
+        override (only when the prior trainer crashed and left the flag stuck).
 
-        Returns:
-            Dict with ``initialized``, ``backend``, ``world_size``.
+        Raises:
+            RuntimeError: if update in progress and force=False.
         """
-        # Lazy import — keeps mlx out of import chain on non-Apple hosts.
         from vllm_mlx.weight_transfer import WeightTransferEngineFactory
 
         backend = "mlx"
         if hasattr(req, "init_info"):
             init_dict = req.init_info or {}
+            force = bool(getattr(req, "force", False))
         elif isinstance(req, dict):
             init_dict = req.get("init_info", {}) or {}
+            force = bool(req.get("force", False))
         else:
             init_dict = {}
+            force = False
+
+        # #1314: multi-trainer race guard.
+        if not force and getattr(self, "_weight_update_in_progress", False):
+            raise RuntimeError(
+                "init_weight_transfer_engine refused: a weight update is "
+                "already in progress on this server. Another trainer holds "
+                "the engine. Wait for its /finish_weight_update, or pass "
+                "force=True to override. See #1314."
+            )
 
         engine_cls = WeightTransferEngineFactory.get_engine_class(backend)
         init_info = engine_cls.parse_init_info(init_dict)
@@ -783,7 +797,14 @@ class EngineCore:
         Closure passed into `receive_weights`. This is where the actual
         in-place update happens: `model.update(dict)` followed by
         `mx.eval(model.parameters())` to materialize lazy ops.
+
+        MLX ``nn.Module.update()`` expects a NESTED dict (e.g.
+        ``{"model": {"embed_tokens": {"weight": arr}}}``), not a flat
+        dotted-key dict. Use ``tree_unflatten`` to convert (Plan-1.5 / TRL
+        smoke surfaced this — see realign#1251 docs).
         """
+        from mlx.utils import tree_unflatten
+
         params_dict = dict(params_list)
         # L-1 mitigation: audit log every weight application. Surface
         # parameter count and a sample of names so an operator can see
@@ -803,7 +824,10 @@ class EngineCore:
                 len(params_dict),
                 sample,
             )
-        self.scheduler.model.update(params_dict)
+        # Convert flat dotted keys -> nested dict so MLX's recursive
+        # apply() walker can find each parameter slot.
+        nested_params = tree_unflatten(list(params_dict.items()))
+        self.scheduler.model.update(nested_params)
         # Force the lazy graph to materialize so the next forward pass sees
         # the new weights deterministically.
         mx.eval(self.scheduler.model.parameters())

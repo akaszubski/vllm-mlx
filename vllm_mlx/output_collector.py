@@ -128,6 +128,14 @@ class RequestOutputCollector:
         This combines the token lists and text, keeping the latest
         status information.
 
+        Phase 2 wire fix (feat/trl-shim): also preserves ``logprobs`` and
+        merges ``new_logprobs``. Previously these fields were dropped from
+        ``RequestOutput(...)`` construction, which caused
+        ``output.logprobs`` to be empty on every non-streaming call where
+        the engine produced more than one chunk before the consumer drained
+        it — i.e., effectively all the time. This broke any caller that
+        relied on per-token logprobs (TRL ``/generate/`` shim, RLHF flows).
+
         Args:
             existing: The existing output in the buffer
             new: The new output to merge
@@ -139,6 +147,18 @@ class RequestOutputCollector:
         merged_new_token_ids = existing.new_token_ids + new.new_token_ids
         merged_new_text = existing.new_text + new.new_text
 
+        # Merge logprobs. ``logprobs`` is cumulative — prefer the latest
+        # (it already includes the prior tokens). ``new_logprobs`` is
+        # per-chunk — concatenate so a single merged-output consumer sees
+        # the full per-token list for the merged chunk.
+        merged_logprobs = new.logprobs if new.logprobs is not None else existing.logprobs
+        if existing.new_logprobs and new.new_logprobs:
+            merged_new_logprobs = list(existing.new_logprobs) + list(new.new_logprobs)
+        else:
+            merged_new_logprobs = (
+                new.new_logprobs if new.new_logprobs is not None else existing.new_logprobs
+            )
+
         return RequestOutput(
             request_id=new.request_id,
             new_token_ids=merged_new_token_ids,
@@ -149,6 +169,8 @@ class RequestOutputCollector:
             finish_reason=new.finish_reason,
             prompt_tokens=new.prompt_tokens,
             completion_tokens=new.completion_tokens,
+            logprobs=merged_logprobs,
+            new_logprobs=merged_new_logprobs,
         )
 
     def clear(self) -> None:
