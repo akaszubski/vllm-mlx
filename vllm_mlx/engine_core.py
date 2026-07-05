@@ -691,24 +691,38 @@ class EngineCore:
     def init_weight_transfer_engine(self, req: Any) -> Dict[str, Any]:
         """Create the MLX weight-transfer engine.
 
-        Idempotent — re-init replaces any existing engine instance.
+        Idempotent for a single trainer.
 
-        Args:
-            req: Request object or dict with ``init_info`` (dict of init args).
+        Security A01 / #1314: refuse re-init when a weight update is
+        already in progress. Prevents a second authenticated trainer from
+        replacing the engine mid-flight while the first trainer's rollout
+        is still applying weights. Pass ``force=True`` in the request to
+        override (only when the prior trainer crashed and left the flag stuck).
 
-        Returns:
-            Dict with ``initialized``, ``backend``, ``world_size``.
+        Raises:
+            RuntimeError: if update in progress and force=False.
         """
-        # Lazy import — keeps mlx out of import chain on non-Apple hosts.
         from vllm_mlx.weight_transfer import WeightTransferEngineFactory
 
         backend = "mlx"
         if hasattr(req, "init_info"):
             init_dict = req.init_info or {}
+            force = bool(getattr(req, "force", False))
         elif isinstance(req, dict):
             init_dict = req.get("init_info", {}) or {}
+            force = bool(req.get("force", False))
         else:
             init_dict = {}
+            force = False
+
+        # #1314: multi-trainer race guard.
+        if not force and getattr(self, "_weight_update_in_progress", False):
+            raise RuntimeError(
+                "init_weight_transfer_engine refused: a weight update is "
+                "already in progress on this server. Another trainer holds "
+                "the engine. Wait for its /finish_weight_update, or pass "
+                "force=True to override. See #1314."
+            )
 
         engine_cls = WeightTransferEngineFactory.get_engine_class(backend)
         init_info = engine_cls.parse_init_info(init_dict)
